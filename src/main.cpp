@@ -31,7 +31,6 @@ struct PlaybackRuntime {
     PlayLayer* layer = nullptr;
     std::vector<PathfinderInput> inputs;
     size_t cursor = 0;
-    double elapsed = 0.0;
     bool active = false;
 };
 
@@ -59,8 +58,9 @@ void seekPlayback(double seconds) {
     if (!g_playback.active)
         return;
 
-    g_playback.elapsed = std::max(0.0, seconds);
-    uint32_t frame = static_cast<uint32_t>(std::llround(g_playback.elapsed * kPathfinderTPS));
+    uint32_t frame = static_cast<uint32_t>(std::llround(
+        std::max(0.0, seconds) * kPathfinderTPS
+    ));
     g_playback.cursor = static_cast<size_t>(std::lower_bound(
         g_playback.inputs.begin(),
         g_playback.inputs.end(),
@@ -94,8 +94,9 @@ void armSolution(std::string const& levelName, PathfinderResult const& result) {
     g_solution.inputs = result.inputs;
     g_solution.armed = !g_solution.inputs.empty();
 
-    // If the solver was opened from the pause menu, apply to the currently
-    // running PlayLayer immediately rather than requiring a restart/scene swap.
+    // If the solver was opened from the pause menu, attach the solution to the
+    // current attempt immediately. Starting/restarting the attempt resets the
+    // cursor to the correct point automatically.
     if (auto* play = PlayLayer::get(); play && play->m_level && levelNameOf(play->m_level) == levelName)
         preparePlayback(play);
 }
@@ -104,7 +105,13 @@ void feedPlayback(PlayLayer* play) {
     if (!g_playback.active || g_playback.layer != play)
         return;
 
-    uint32_t frame = static_cast<uint32_t>(std::llround(g_playback.elapsed * kPathfinderTPS));
+    // Use Geometry Dash's own attempt clock instead of maintaining a second
+    // timer. This keeps playback tied to the actual gameplay timeline and makes
+    // restarts deterministic.
+    uint32_t frame = static_cast<uint32_t>(std::llround(
+        std::max(0.0, play->m_attemptTime) * kPathfinderTPS
+    ));
+
     while (g_playback.cursor < g_playback.inputs.size() &&
            g_playback.inputs[g_playback.cursor].frame <= frame) {
         auto const input = g_playback.inputs[g_playback.cursor++];
@@ -158,10 +165,10 @@ public:
 
         auto* percent = typeinfo_cast<CCLabelBMFont*>(getChildByIDRecursive("percent"));
         if (percent) {
-            percent->setString(fmt::format(
-                result.complete ? "Solved - {:.2f}%" : "Best path - {:.2f}%",
-                result.progress
-            ).c_str());
+            auto progressText = result.complete
+                ? fmt::format("Solved - {:.2f}%", result.progress)
+                : fmt::format("Best path - {:.2f}%", result.progress);
+            percent->setString(progressText.c_str());
         }
 
         bool autoApply = Mod::get()->getSettingValue<bool>("auto-apply-inputs");
@@ -217,12 +224,13 @@ public:
             .move(autoApply || !hasInputs ? 0 : 55, -42)
             .parent(menu);
 
-        Build<CCLabelBMFont>::create(
-                hasInputs
-                    ? (autoApply ? "Inputs applied automatically" : "Choose how to use this path")
-                    : "No usable input path was found",
-                "chatFont.fnt"
-            )
+        char const* statusText = !hasInputs
+            ? "No usable input path was found"
+            : autoApply
+                ? "Inputs applied automatically"
+                : "Choose how to use this path";
+
+        Build<CCLabelBMFont>::create(statusText, "chatFont.fnt")
             .id("status")
             .scale(0.55f)
             .move(0, -12)
@@ -255,8 +263,10 @@ public:
 
         setKeypadEnabled(true);
         Build(this).initTouch().schedule([this](float) {
-            if (auto* label = typeinfo_cast<CCLabelBMFont*>(getChildByIDRecursive("percent")))
-                label->setString(fmt::format("{:.2f}%", m_progress.load()).c_str());
+            if (auto* label = typeinfo_cast<CCLabelBMFont*>(getChildByIDRecursive("percent"))) {
+                auto text = fmt::format("{:.2f}%", m_progress.load());
+                label->setString(text.c_str());
+            }
 
             if (m_result.valid() && m_result.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
                 finalize(m_result.get());
@@ -304,9 +314,6 @@ struct PathfinderGameLayer : geode::Modify<PathfinderGameLayer, GJBaseGameLayer>
             feedPlayback(play);
 
         GJBaseGameLayer::processCommands(dt, isHalfTick, isLastTick);
-
-        if (play && g_playback.active && g_playback.layer == play)
-            g_playback.elapsed += dt;
     }
 };
 
