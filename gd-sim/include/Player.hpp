@@ -44,6 +44,11 @@ struct Player : public Entity {
 	double acceleration;
 	double velocity;
 
+	/// 2.2 gameplay state.
+	double robotBoostTime;
+	float dashAngle;
+	float dashSpeed;
+
 	/// See util.hpp for what cow_set is
 	cow_set<int> usedEffects;
 
@@ -112,6 +117,19 @@ struct Player : public Entity {
 
 	/// Whether velocity at the end of the frame is to be rounded (typically used by ball)
 	bool roundVelocity;
+
+	/// Dash-orb state.
+	bool dashing;
+
+	/// Dual state is copied with each frame so rollback stays deterministic.
+	bool dualActive;
+	bool player2;
+
+	/// Letter blocks are evaluated before solid blocks each frame.
+	bool dBlock;
+	bool jBlock;
+	bool hBlock;
+	bool fBlock;
 
 	Player();
 
