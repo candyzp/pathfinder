@@ -9,7 +9,7 @@
 	"geode": "5.9.0",
 	"name": "Pathfinder",
 	"developer": "candyzp",
-	"version": "v1.0.0-beta.244",
+	"version": "v1.0.0-beta.245",
 	"dependencies": {
 		"geode.node-ids": {
 			"id": "geode.node-ids",
@@ -21,6 +21,18 @@
 		"sprites": [
 			"pathfinder.png"
 		]
+	},
+	"settings": {
+		"playback-title": {
+			"type": "title",
+			"name": "Built-in Autoplay"
+		},
+		"auto-apply-inputs": {
+			"type": "bool",
+			"default": true,
+			"name": "Automatically set inputs for you",
+			"description": "When Pathfinder finishes solving a level, immediately arm its built-in autoplay for that level. Turn this off to choose Apply Now or Export Macro after each solve."
+		}
 	},
 	"description": "Beat levels automatically!",
 	"tags": ["offline", "gameplay", "utility"],
