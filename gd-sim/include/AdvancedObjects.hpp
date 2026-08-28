@@ -39,3 +39,18 @@ struct GameplayTrigger : public EffectObject {
 	bool touching(Player const&) const override;
 	void collide(Player&) const override;
 };
+
+/// 2.2 Player Control Trigger. Platformer-only movement controls are retained in the
+/// parsed state, while classic Pathfinder uses the jump/slide parts that affect survival.
+struct PlayerControlTrigger : public EffectObject {
+	bool targetP1;
+	bool targetP2;
+	bool stopJump;
+	bool stopMove;
+	bool stopRotation;
+	bool stopSlide;
+
+	PlayerControlTrigger(Vec2D size, std::unordered_map<int, std::string>&& fields);
+	bool touching(Player const&) const override;
+	void collide(Player&) const override;
+};
