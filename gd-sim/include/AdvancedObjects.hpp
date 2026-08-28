@@ -35,6 +35,9 @@ enum class GameplayTriggerType {
 struct GameplayTrigger : public EffectObject {
 	GameplayTriggerType type;
 	float value;
+	bool touchTriggered = false;
+	bool spawnTriggered = false;
+
 	GameplayTrigger(Vec2D size, std::unordered_map<int, std::string>&& fields);
 	bool touching(Player const&) const override;
 	void collide(Player&) const override;
@@ -49,6 +52,8 @@ struct PlayerControlTrigger : public EffectObject {
 	bool stopMove;
 	bool stopRotation;
 	bool stopSlide;
+	bool touchTriggered = false;
+	bool spawnTriggered = false;
 
 	PlayerControlTrigger(Vec2D size, std::unordered_map<int, std::string>&& fields);
 	bool touching(Player const&) const override;
