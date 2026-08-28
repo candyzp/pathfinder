@@ -3,7 +3,8 @@
 #include <Level.hpp>
 #include <cmath>
 
-Orb::Orb(Vec2D size, std::unordered_map<int, std::string>&& fields) : EffectObject(size, std::move(fields)) {
+Orb::Orb(Vec2D size, std::unordered_map<int, std::string>&& fields)
+	: EffectObject(size, std::unordered_map<int, std::string>(fields)), teleport(fields) {
 	switch (std::stoi(fields[1])) {
 		case 36: type = OrbType::Yellow; break;
 		case 84: type = OrbType::Blue; break;
@@ -94,6 +95,14 @@ void Orb::collide(Player& p) const {
 
 	p.buffer = false;
 	p.vehicleBuffer = false;
+
+	if (type == OrbType::Teleport) {
+		if (teleport.apply(p, pos))
+			EffectObject::collide(p);
+		p.input = false;
+		return;
+	}
+
 	EffectObject::collide(p);
 
 	if (type == OrbType::Dash || type == OrbType::GravityDash) {
@@ -119,13 +128,6 @@ void Orb::collide(Player& p) const {
 			p.velocityOverride = true;
 			p.grounded = true;
 		}
-		p.input = false;
-		return;
-	}
-
-	// Teleport orbs use group-linked target objects rather than a local offset. Keep the
-	// activation deterministic and neutral until the target-group parser resolves one.
-	if (type == OrbType::Teleport) {
 		p.input = false;
 		return;
 	}
