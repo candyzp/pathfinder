@@ -36,6 +36,8 @@ struct TeleportConfig {
 
 struct TeleportTrigger : public EffectObject {
     TeleportConfig config;
+    bool touchTriggered = false;
+    bool spawnTriggered = false;
 
     TeleportTrigger(Vec2D size, std::unordered_map<int, std::string>&& fields);
     bool touching(Player const&) const override;
