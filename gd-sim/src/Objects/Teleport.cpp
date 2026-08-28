@@ -83,9 +83,6 @@ bool TeleportConfig::apply(Player& p, Vec2D const& sourcePos) const {
             break;
     }
 
-    // A target marker's authored rotation is the redirect direction. Pathfinder's
-    // classic simulator stores horizontal movement separately, so preserve X speed and
-    // apply the vertical component to its Y-velocity state.
     float targetRadians = deg2rad(target.rotation);
     float verticalDirection = std::sin(targetRadians);
 
@@ -129,11 +126,19 @@ bool TeleportConfig::apply(Player& p, Vec2D const& sourcePos) const {
 
 TeleportTrigger::TeleportTrigger(Vec2D size, std::unordered_map<int, std::string>&& fields)
     : EffectObject(size, std::unordered_map<int, std::string>(fields)), config(fields) {
+    touchTriggered = fieldBool(fields, 11);
+    spawnTriggered = fieldBool(fields, 62);
 }
 
 bool TeleportTrigger::touching(Player const& p) const {
     if (p.usedEffects.contains(id))
         return false;
+
+    if (spawnTriggered)
+        return false;
+
+    if (touchTriggered)
+        return EffectObject::touching(p);
 
     float previousX = p.prevPlayer().pos.x;
     float currentX = p.pos.x;
