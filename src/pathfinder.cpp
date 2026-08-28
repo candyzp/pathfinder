@@ -69,8 +69,7 @@ static bool continuousMode(VehicleType type) {
 }
 
 static bool reachedGoal(Level2& lvl) {
-    auto& player = lvl.latestState();
-    return player.completed || player.pos.x >= lvl.length;
+    return lvl.latestState().completed;
 }
 
 static bool betterCandidate(CandidateResult const& a, CandidateResult const& b) {
@@ -188,6 +187,14 @@ static TrialResult tryInputs(Level2& lvl, InputSet const& inputs, int horizonFra
         complete,
         !complete && !lvl.latestState().dead && lvl.currentFrame() >= endFrame
     };
+
+    // Natural end crossing sets Player::completed in Level::runFrame. If a route
+    // somehow appears well beyond the endpoint without completion, it got there
+    // through a bad teleport/target resolution and must never be ranked as progress.
+    if (!result.complete && result.x > lvl.length + 120.f) {
+        result.dead = true;
+        result.survivedHorizon = false;
+    }
 
     float lastY = lvl.latestState().pos.y;
     if (!result.complete && result.x < lvl.length &&
@@ -699,6 +706,11 @@ PathfinderResult pathfind(
                     break;
             }
         }
+
+        // If a malformed teleport/group target flings the player beyond the known
+        // endpoint without actually completing, invalidate that route immediately.
+        if (!lvl.latestState().completed && lvl.latestState().pos.x > lvl.length + 120.f)
+            lvl.latestState().dead = true;
 
         if (lvl.currentFrame() > trueBest) {
             trueBest = lvl.currentFrame();
