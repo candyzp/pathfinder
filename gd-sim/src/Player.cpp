@@ -4,28 +4,17 @@
 #include <cmath>
 #include <climits>
 
-Entity Player::innerHitbox() const {
-	return {pos, Vec2D{9, 9}, rotation};
-}
-
-Entity Player::unrotatedHitbox() const {
-	return {pos, size, 0};
-}
+Entity Player::innerHitbox() const { return {pos, Vec2D{9, 9}, rotation}; }
+Entity Player::unrotatedHitbox() const { return {pos, size, 0}; }
 
 void Player::setVelocity(double v, bool override) {
 	velocityOverride = override;
 	velocity = v * (small ? 0.8 : 1);
-	if (v != 0)
-		grounded = false;
+	if (v != 0) grounded = false;
 }
 
-Player const& Player::prevPlayer() const {
-	return level->getState(frame - 1, player2);
-}
-
-Player const* Player::nextPlayer() const {
-	return level->currentFrame() <= frame ? nullptr : &level->getState(frame + 1, player2);
-}
+Player const& Player::prevPlayer() const { return level->getState(frame - 1, player2); }
+Player const* Player::nextPlayer() const { return level->currentFrame() <= frame ? nullptr : &level->getState(frame + 1, player2); }
 
 double roundVel(double velocity, bool upsideDown) {
 	double nVel = velocity / 54.0 * (upsideDown * 2 - 1);
@@ -36,6 +25,9 @@ double roundVel(double velocity, bool upsideDown) {
 }
 
 void Player::preCollision(bool pressed) {
+	// TimeWarp affects the simulated game timestep, not the search tick itself.
+	dt *= std::clamp(timeWarp, 0.05f, 4.0f);
+
 	dBlock = false;
 	jBlock = false;
 	hBlock = false;
@@ -49,8 +41,7 @@ void Player::preCollision(bool pressed) {
 		acceleration = 0;
 		grounded = false;
 	} else {
-		if (dashing && !pressed)
-			dashing = false;
+		if (dashing && !pressed) dashing = false;
 		pos.x += direction * player_speeds[(int)speed] * dt;
 		pos.y += grav(velocity) * dt;
 	}
@@ -68,13 +59,10 @@ void Player::preCollision(bool pressed) {
 		buffer = button;
 	}
 
-	for (auto& i : actions)
-		i(*this);
+	for (auto& i : actions) i(*this);
 	actions.clear();
 	potentialSlopes.clear();
-
-	if (slopeData.slope && slopeData.slope->gravOrient(*this) == 1)
-		grounded = true;
+	if (slopeData.slope && slopeData.slope->gravOrient(*this) == 1) grounded = true;
 }
 
 void Player::postCollision() {
@@ -101,50 +89,36 @@ void Player::postCollision() {
 	}
 
 	if (prevPlayer().gravBottom(*this) > prevPlayer().gravFloor() && upsideDown == prevPlayer().upsideDown && !grounded && velocity <= 0) {
-		if (prevPlayer().grounded && !prevPlayer().input)
-			coyoteFrames = 0;
+		if (prevPlayer().grounded && !prevPlayer().input) coyoteFrames = 0;
 		coyoteFrames++;
 	} else {
 		coyoteFrames = INT_MAX;
 	}
 
 	vehicle.update(*this);
-
-	// Gravity Trigger (2.2) scales the vehicle's normal acceleration without changing
-	// direction. Wave sets acceleration to zero, so it remains unaffected as in GD.
 	acceleration *= gravityScale;
 
 	if (!velocityOverride) {
 		double newVel = velocity + acceleration * dt;
-
 		if (!grounded && prevPlayer().grounded && ((!input && (prevPlayer().button || !button)) || buffer) && prevPlayer().gravBottom(*this) > prevPlayer().gravFloor() && size == prevPlayer().size) {
 			pos.y += roundVel(prevPlayer().grav(prevPlayer().acceleration) * dt, prevPlayer().upsideDown) * dt;
-
-			if (gravityPortal && vehicle.type != VehicleType::Ship)
-				newVel = -newVel;
-
-			if (velocity == 0)
-				newVel += roundVel(prevPlayer().acceleration * dt, upsideDown);
+			if (gravityPortal && vehicle.type != VehicleType::Ship) newVel = -newVel;
+			if (velocity == 0) newVel += roundVel(prevPlayer().acceleration * dt, upsideDown);
 		}
 		velocity = newVel;
 	}
 
-	if (roundVelocity)
-		velocity = roundVel(velocity, upsideDown);
-
-	if (slopeData.slope)
-		slopeData.slope->calc(*this);
-
+	if (roundVelocity) velocity = roundVel(velocity, upsideDown);
+	if (slopeData.slope) slopeData.slope->calc(*this);
 	vehicle.clamp(*this);
 }
 
 Player::Player() :
 	Entity({{0, 15}, {30, 30}, 0}), frame(1), timeElapsed(0), dead(false),
-	vehicle(Vehicle::from(VehicleType::Cube)),
-	ceiling(999999), floor(0), grounded(true),
+	vehicle(Vehicle::from(VehicleType::Cube)), ceiling(999999), floor(0), grounded(true),
 	coyoteFrames(0), acceleration(0), velocity(0), robotBoostTime(0),
 	dashAngle(0), dashSpeed(0), gravityScale(1.f), timeWarp(1.f), direction(1),
-	velocityOverride(false), button(false), input(false),
-	buffer(false), vehicleBuffer(false), upsideDown(false), small(false),
-	gravityPortal(false), roundVelocity(true), dashing(false), dualActive(false), player2(false),
-	dBlock(false), jBlock(false), hBlock(false), fBlock(false), speed(1), slopeData({{}, 0, false}) {}
+	velocityOverride(false), button(false), input(false), buffer(false), vehicleBuffer(false),
+	upsideDown(false), small(false), gravityPortal(false), roundVelocity(true), dashing(false),
+	dualActive(false), player2(false), dBlock(false), jBlock(false), hBlock(false), fBlock(false),
+	speed(1), slopeData({{}, 0, false}) {}
