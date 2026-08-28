@@ -165,21 +165,22 @@ Level::Level(std::string const& lvlString) {
 			continue;
 
 		int objectID = atoi(obj[1].c_str());
+
+		// Object 31 is an editor Start Position. Published/full-level Pathfinder
+		// runs must begin from the level header, not from whichever test StartPos
+		// the creator happened to leave in the object list.
+		if (objectID == 31)
+			continue;
+
 		float authoredX = stod_def(obj.contains(2) ? obj[2] : std::string{}, 0.f);
 		bool validAuthoredX = std::isfinite(authoredX) && authoredX >= 0.f;
 
-		if (validAuthoredX && objectID != 31) {
+		if (validAuthoredX) {
 			authoredXs.push_back(authoredX);
 			authoredExtent = std::max(authoredExtent, authoredX + 100.f);
 		}
 
 		registerGroupTargets(obj, groupTargets);
-
-		if (objectID == 31) {
-			initLevelSettings(objstr, player);
-			player.pos.x = stod_def(obj[2], 0);
-			player.pos.y = stod_def(obj[3], 0);
-		}
 
 		auto unsupported = makeUnsupportedInfo(objectID, obj);
 
@@ -192,7 +193,7 @@ Level::Level(std::string const& lvlString) {
 			if (sectionPos >= sections.size())
 				sections.resize(sectionPos + 1);
 			sections[sectionPos].push_back(ob);
-		} else if (objectID != 31) {
+		} else {
 			unsupportedObjects.push_back(std::move(unsupported));
 		}
 	}
@@ -212,7 +213,7 @@ Level::Level(std::string const& lvlString) {
 }
 
 void Level::simulatePlayer(Player& p, bool pressed, float dt) {
-	if (p.dead)
+	if (p.dead || p.completed)
 		return;
 
 	p.dt = dt;
@@ -244,7 +245,7 @@ void Level::simulatePlayer(Player& p, bool pressed, float dt) {
 	for (auto section : nearby) {
 		if (section == nullptr) continue;
 		for (auto& o : *section) {
-			if (p.dead) break;
+			if (p.dead || p.completed) break;
 			if (o->prio == 1)
 				blocks.push_back(o);
 			else if (o->prio == 2)
@@ -257,7 +258,7 @@ void Level::simulatePlayer(Player& p, bool pressed, float dt) {
 	}
 
 	for (int i = static_cast<int>(blocks.size()) - 1; i >= 0; --i) {
-		if (p.dead) break;
+		if (p.dead || p.completed) break;
 		auto& b = blocks[i];
 		if (b->touching(p)) {
 			++numCollisions;
@@ -266,14 +267,14 @@ void Level::simulatePlayer(Player& p, bool pressed, float dt) {
 	}
 
 	for (auto& h : hazards) {
-		if (p.dead) break;
+		if (p.dead || p.completed) break;
 		if (h->touching(p)) {
 			++numCollisions;
 			h->collide(p);
 		}
 	}
 
-	if (!p.dead)
+	if (!p.dead && !p.completed)
 		p.postCollision();
 
 	if (debug) {
@@ -316,6 +317,10 @@ Player& Level::runFrame(bool player1Pressed, bool player2Pressed, float dt) {
 		if (p1.dead || p2.dead) {
 			p1.dead = true;
 			p2.dead = true;
+		}
+		if (p1.completed || p2.completed) {
+			p1.completed = true;
+			p2.completed = true;
 		}
 	} else {
 		p2 = p1;
