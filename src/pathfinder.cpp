@@ -126,6 +126,12 @@ static bool betterCandidate(CandidateResult const& a, CandidateResult const& b) 
     if (a.trial.dead != b.trial.dead)
         return !a.trial.dead;
 
+    // If every forecast dies, surviving longer is the most useful signal. A
+    // candidate that clears the current obstacle and dies at the next one is much
+    // more valuable than a route that gains a few extra pixels then dies now.
+    if (a.trial.dead && b.trial.dead && a.trial.frame != b.trial.frame)
+        return a.trial.frame > b.trial.frame;
+
     // Progress matters before click count. For flying modes most surviving
     // candidates reach nearly the same X, so clearance is the useful tie-breaker.
     constexpr float progressTie = 8.f;
@@ -797,6 +803,11 @@ PathfinderResult pathfind(
     baseSeed ^= static_cast<uint32_t>(std::llround(std::max(0.f, trustedEndX)));
     baseSeed ^= 0x9e3779b9u;
 
+    // Keep the structured search deterministic inside one run, but give a fresh
+    // launch a different branch ordering. Re-running a difficult level should be
+    // able to escape a local minimum instead of replaying the exact same failure.
+    std::random_device rd;
+    baseSeed ^= rd();
     std::mt19937 rng(baseSeed);
 
     int stagnantRounds = 0;
@@ -879,49 +890,100 @@ PathfinderResult pathfind(
                     repeatedDeathZone = 1;
                 lastDeathX = best.trial.x;
 
-                // Never commit a route already known to die. Use it as search
-                // information, back up, and try a different branch.
-                recover(repeatedDeathZone >= 2 ? 420 : 180);
-                continue;
-            }
+                int deathSpan = std::max(0, best.trial.frame - frame);
+                float deathGain = best.trial.x - lvl.latestState().pos.x;
 
-            if (best.trial.frame <= frame ||
-                best.trial.x <= lvl.latestState().pos.x + 0.5f) {
-                ++stagnantRounds;
-                if (stagnantRounds >= 2)
+                // Complex levels commonly have no route that survives the whole
+                // forecast: a candidate may clear the current obstacle and die at
+                // the next one. Throwing that route away entirely causes the solver
+                // to sit at one percentage forever. Commit only an early, verified
+                // prefix and replan long before the known death.
+                int margin = mode == VehicleType::Wave
+                    ? 120
+                    : continuousMode(mode) ? 100 : 80;
+                int fractionPercent = mode == VehicleType::Wave
+                    ? 32
+                    : continuousMode(mode) ? 38 : 46;
+                int safeSpan = std::min(
+                    std::max(0, deathSpan - margin),
+                    deathSpan * fractionPercent / 100
+                );
+
+                bool usefulPrefix =
+                    safeSpan >= 24 &&
+                    deathGain > 30.f &&
+                    best.trial.frame > frame + margin;
+
+                if (!usefulPrefix) {
+                    recover(repeatedDeathZone >= 2 ? 420 : 180);
+                    continue;
+                }
+
+                // Keep dead-route prefixes small enough that a new search gets a
+                // chance to react before the later obstacle that killed the forecast.
+                int prefixCap = mode == VehicleType::Wave
+                    ? 220
+                    : continuousMode(mode) ? 280 : 360;
+                safeSpan = std::min(safeSpan, prefixCap);
+                int applyUntil = frame + safeSpan;
+
+                for (int i = frame; i < applyUntil && !lvl.latestState().dead; ++i) {
+                    auto p1 = inputKey(static_cast<uint32_t>(i), false);
+                    auto p2 = inputKey(static_cast<uint32_t>(i), true);
+
+                    if (best.inputs.contains(p1))
+                        lvl.press1 = !lvl.press1;
+                    if (best.inputs.contains(p2))
+                        lvl.press2 = !lvl.press2;
+
+                    lvl.runFrame(lvl.press1, lvl.press2, 1.f / 240.f);
+                    if (reachedGoal(lvl))
+                        break;
+                }
+
+                if (lvl.latestState().dead) {
                     recover(300);
-                continue;
-            }
+                    continue;
+                }
+            } else {
+                if (best.trial.frame <= frame ||
+                    best.trial.x <= lvl.latestState().pos.x + 0.5f) {
+                    ++stagnantRounds;
+                    if (stagnantRounds >= 2)
+                        recover(300);
+                    continue;
+                }
 
-            int span = std::max(1, best.trial.frame - frame);
-            int commitNumerator;
+                int span = std::max(1, best.trial.frame - frame);
+                int commitNumerator;
 
-            if (mode == VehicleType::Wave)
-                commitNumerator = best.trial.survivedHorizon ? 28 : 20;
-            else if (continuousMode(mode))
-                commitNumerator = best.trial.survivedHorizon ? 38 : 26;
-            else if (best.trial.survivedHorizon && best.inputs.empty())
-                commitNumerator = 68;
-            else if (best.trial.survivedHorizon)
-                commitNumerator = 56;
-            else
-                commitNumerator = 34;
+                if (mode == VehicleType::Wave)
+                    commitNumerator = best.trial.survivedHorizon ? 28 : 20;
+                else if (continuousMode(mode))
+                    commitNumerator = best.trial.survivedHorizon ? 38 : 26;
+                else if (best.trial.survivedHorizon && best.inputs.empty())
+                    commitNumerator = 68;
+                else if (best.trial.survivedHorizon)
+                    commitNumerator = 56;
+                else
+                    commitNumerator = 34;
 
-            int committedSpan = std::max(1, span * commitNumerator / 100);
-            int applyUntil = frame + committedSpan;
+                int committedSpan = std::max(1, span * commitNumerator / 100);
+                int applyUntil = frame + committedSpan;
 
-            for (int i = frame; i < applyUntil && !lvl.latestState().dead; ++i) {
-                auto p1 = inputKey(static_cast<uint32_t>(i), false);
-                auto p2 = inputKey(static_cast<uint32_t>(i), true);
+                for (int i = frame; i < applyUntil && !lvl.latestState().dead; ++i) {
+                    auto p1 = inputKey(static_cast<uint32_t>(i), false);
+                    auto p2 = inputKey(static_cast<uint32_t>(i), true);
 
-                if (best.inputs.contains(p1))
-                    lvl.press1 = !lvl.press1;
-                if (best.inputs.contains(p2))
-                    lvl.press2 = !lvl.press2;
+                    if (best.inputs.contains(p1))
+                        lvl.press1 = !lvl.press1;
+                    if (best.inputs.contains(p2))
+                        lvl.press2 = !lvl.press2;
 
-                lvl.runFrame(lvl.press1, lvl.press2, 1.f / 240.f);
-                if (reachedGoal(lvl))
-                    break;
+                    lvl.runFrame(lvl.press1, lvl.press2, 1.f / 240.f);
+                    if (reachedGoal(lvl))
+                        break;
+                }
             }
         }
 
