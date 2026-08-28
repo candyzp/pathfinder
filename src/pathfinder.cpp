@@ -4,6 +4,8 @@
 #include <Level.hpp>
 #include <random>
 #include <limits>
+#include <vector>
+#include <iterator>
 #include <gdr/gdr.hpp>
 #include "pathfinder.hpp"
 
@@ -32,9 +34,18 @@ struct Level2 : public Level {
 };
 
 using SearchInput = uint32_t;
+using InputSet = std::set<SearchInput>;
 
 static SearchInput inputKey(uint32_t frame, bool player2) {
     return (frame << 1) | static_cast<uint32_t>(player2);
+}
+
+static uint32_t inputFrame(SearchInput input) {
+    return input >> 1;
+}
+
+static bool inputPlayer2(SearchInput input) {
+    return (input & 1u) != 0;
 }
 
 struct TrialResult {
@@ -44,29 +55,66 @@ struct TrialResult {
     bool complete = false;
 };
 
-static int maxToggleBudget(VehicleType type) {
-    switch (type) {
-        case VehicleType::Cube:   return 10;
-        case VehicleType::Ship:   return 18;
-        case VehicleType::Ball:   return 10;
-        case VehicleType::Ufo:    return 14;
-        case VehicleType::Wave:   return 24;
-        case VehicleType::Robot:  return 12;
-        case VehicleType::Spider: return 10;
-        case VehicleType::Swing:  return 20;
-    }
-    return 12;
+struct CandidateResult {
+    InputSet inputs;
+    TrialResult trial;
+};
+
+static bool betterCandidate(CandidateResult const& a, CandidateResult const& b) {
+    if (a.trial.complete != b.trial.complete)
+        return a.trial.complete;
+    if (a.trial.x != b.trial.x)
+        return a.trial.x > b.trial.x;
+    if (a.trial.dead != b.trial.dead)
+        return !a.trial.dead;
+    if (a.inputs.size() != b.inputs.size())
+        return a.inputs.size() < b.inputs.size();
+    return a.trial.frame > b.trial.frame;
 }
 
-static TrialResult tryInputs(Level2& lvl, std::set<SearchInput> const& inputs) {
+static int maxToggleBudget(VehicleType type) {
+    switch (type) {
+        case VehicleType::Cube:   return 8;
+        case VehicleType::Ship:   return 16;
+        case VehicleType::Ball:   return 8;
+        case VehicleType::Ufo:    return 12;
+        case VehicleType::Wave:   return 20;
+        case VehicleType::Robot:  return 10;
+        case VehicleType::Spider: return 8;
+        case VehicleType::Swing:  return 16;
+    }
+    return 10;
+}
+
+static std::vector<int> usefulHoldDurations(VehicleType type) {
+    switch (type) {
+        case VehicleType::Cube:   return {2, 6, 12, 24};
+        case VehicleType::Ship:   return {12, 24, 48, 96, 180, 300};
+        case VehicleType::Ball:   return {2, 6, 12};
+        case VehicleType::Ufo:    return {2, 6, 12, 24};
+        case VehicleType::Wave:   return {8, 16, 32, 64, 120, 220};
+        case VehicleType::Robot:  return {8, 20, 40, 70, 110};
+        case VehicleType::Spider: return {2, 6, 12};
+        case VehicleType::Swing:  return {8, 16, 32, 64, 120};
+    }
+    return {4, 12, 24};
+}
+
+static void addToggle(InputSet& inputs, int startFrame, int horizon, int offset, bool player2) {
+    if (offset < 0 || offset >= horizon)
+        return;
+    inputs.insert(inputKey(static_cast<uint32_t>(startFrame + offset), player2));
+}
+
+static void addPulse(InputSet& inputs, int startFrame, int horizon, int offset, int duration, bool player2) {
+    addToggle(inputs, startFrame, horizon, offset, player2);
+    addToggle(inputs, startFrame, horizon, offset + std::max(1, duration), player2);
+}
+
+static TrialResult tryInputs(Level2& lvl, InputSet const& inputs, int horizonFrames) {
     auto startFrame = lvl.currentFrame();
     auto press1Before = lvl.press1;
     auto press2Before = lvl.press2;
-
-    // Give every candidate the same amount of simulated future. The old solver
-    // stopped as soon as a candidate ran out of generated toggles, accidentally
-    // rewarding spammy candidates simply because they contained more clicks.
-    constexpr int horizonFrames = 1000;
     int endFrame = startFrame + horizonFrames;
 
     while (lvl.currentFrame() < endFrame &&
@@ -104,6 +152,198 @@ static TrialResult tryInputs(Level2& lvl, std::set<SearchInput> const& inputs) {
     return result;
 }
 
+static std::vector<InputSet> makeStructuredSeeds(
+    Level2 const& lvl,
+    int startFrame,
+    int horizonFrames,
+    bool player2
+) {
+    std::vector<InputSet> seeds;
+    auto const type = player2 ? lvl.latestState2().vehicle.type : lvl.latestState().vehicle.type;
+    auto const durations = usefulHoldDurations(type);
+
+    // Always test doing absolutely nothing. On safe stretches this should beat
+    // needless clicking and helps Pathfinder naturally ignore fake/decorative orbs.
+    seeds.emplace_back();
+
+    int denseWindow = std::min(horizonFrames, 960);
+    int coarseWindow = std::min(horizonFrames, 1500);
+
+    // Dense timing sweep near the player. Hard jump windows usually live here.
+    for (int offset = 0; offset < denseWindow; offset += 12) {
+        for (int duration : durations) {
+            InputSet input;
+            addPulse(input, startFrame, horizonFrames, offset, duration, player2);
+            seeds.push_back(std::move(input));
+        }
+    }
+
+    // Farther look-ahead gets a coarser sweep so we can discover setups for an
+    // obstacle before it is already on top of the player.
+    for (int offset = 960; offset < coarseWindow; offset += 36) {
+        for (size_t i = 0; i < durations.size(); i += 2) {
+            InputSet input;
+            addPulse(input, startFrame, horizonFrames, offset, durations[i], player2);
+            seeds.push_back(std::move(input));
+        }
+    }
+
+    return seeds;
+}
+
+static SearchInput nthInput(InputSet const& inputs, size_t index) {
+    auto it = inputs.begin();
+    std::advance(it, static_cast<long>(index));
+    return *it;
+}
+
+static InputSet mutateCandidate(
+    InputSet base,
+    Level2 const& lvl,
+    int startFrame,
+    int horizonFrames,
+    std::mt19937& rng
+) {
+    std::uniform_int_distribution<int> mutationDist(0, 4);
+    std::uniform_int_distribution<int> offsetDist(0, std::max(0, horizonFrames - 1));
+    std::uniform_int_distribution<int> shiftDist(-48, 48);
+    bool dual = lvl.latestState().dualActive;
+
+    int mutations = 1 + static_cast<int>(rng() % 3);
+    for (int m = 0; m < mutations; ++m) {
+        int kind = mutationDist(rng);
+
+        if (kind == 0 || base.empty()) {
+            bool player2 = dual && ((rng() & 3u) == 0u);
+            auto type = player2 ? lvl.latestState2().vehicle.type : lvl.latestState().vehicle.type;
+            auto durations = usefulHoldDurations(type);
+            int offset = offsetDist(rng);
+            int duration = durations[rng() % durations.size()];
+            addPulse(base, startFrame, horizonFrames, offset, duration, player2);
+        } else if (kind == 1 && !base.empty()) {
+            size_t index = static_cast<size_t>(rng() % base.size());
+            auto value = nthInput(base, index);
+            base.erase(value);
+        } else if (kind == 2 && !base.empty()) {
+            size_t index = static_cast<size_t>(rng() % base.size());
+            auto value = nthInput(base, index);
+            bool player2 = inputPlayer2(value);
+            int oldOffset = static_cast<int>(inputFrame(value)) - startFrame;
+            int newOffset = std::clamp(oldOffset + shiftDist(rng), 0, horizonFrames - 1);
+            base.erase(value);
+            addToggle(base, startFrame, horizonFrames, newOffset, player2);
+        } else if (kind == 3) {
+            bool player2 = dual && ((rng() & 1u) != 0u);
+            addToggle(base, startFrame, horizonFrames, offsetDist(rng), player2);
+        } else if (kind == 4 && base.size() >= 2) {
+            // Remove a nearby toggle pair. This is a direct simplification move
+            // and lets refinement discover cleaner routes from noisy parents.
+            size_t index = static_cast<size_t>(rng() % base.size());
+            auto first = nthInput(base, index);
+            auto next = base.upper_bound(first);
+            base.erase(first);
+            if (next != base.end())
+                base.erase(next);
+        }
+    }
+
+    return base;
+}
+
+static CandidateResult searchBestInputs(
+    Level2& lvl,
+    std::atomic_bool& stop,
+    std::mt19937& rng,
+    int horizonFrames,
+    int refinementStrength
+) {
+    int frame = lvl.currentFrame();
+    bool dual = lvl.latestState().dualActive;
+
+    std::vector<InputSet> seeds = makeStructuredSeeds(lvl, frame, horizonFrames, false);
+    if (dual) {
+        auto p2Seeds = makeStructuredSeeds(lvl, frame, horizonFrames, true);
+        size_t keep = std::min<size_t>(p2Seeds.size(), 80);
+        for (size_t i = 1; i < keep; ++i)
+            seeds.push_back(std::move(p2Seeds[i]));
+    }
+
+    // Add broad random candidates after the structured sweep. Randomness is
+    // still useful for unusual setups, but it is no longer the entire brain.
+    int randomCandidates = 180 + refinementStrength * 80;
+    std::uniform_int_distribution<int> frameDist(0, std::max(0, horizonFrames - 1));
+    int maxP1 = maxToggleBudget(lvl.latestState().vehicle.type);
+    int maxP2 = dual ? maxToggleBudget(lvl.latestState2().vehicle.type) : 2;
+
+    for (int i = 0; i < randomCandidates; ++i) {
+        InputSet inputs;
+        int p1Count = static_cast<int>(rng() % static_cast<unsigned>(maxP1 + 1));
+        int p2Count = dual ? static_cast<int>(rng() % static_cast<unsigned>(maxP2 + 1)) : 0;
+
+        for (int j = 0; j < p1Count; ++j)
+            addToggle(inputs, frame, horizonFrames, frameDist(rng), false);
+        for (int j = 0; j < p2Count; ++j)
+            addToggle(inputs, frame, horizonFrames, frameDist(rng), true);
+
+        seeds.push_back(std::move(inputs));
+    }
+
+    std::vector<CandidateResult> elites;
+    constexpr size_t eliteCount = 18;
+
+    auto consider = [&](InputSet inputs) {
+        if (stop)
+            return;
+
+        CandidateResult candidate;
+        candidate.trial = tryInputs(lvl, inputs, horizonFrames);
+        candidate.inputs = std::move(inputs);
+
+        elites.push_back(std::move(candidate));
+        std::sort(elites.begin(), elites.end(), betterCandidate);
+        if (elites.size() > eliteCount)
+            elites.resize(eliteCount);
+    };
+
+    for (auto& seed : seeds) {
+        if (stop)
+            break;
+        consider(std::move(seed));
+        if (!elites.empty() && elites.front().trial.complete && elites.front().inputs.size() <= 2)
+            break;
+    }
+
+    // Evolutionary refinement: repeatedly mutate the best routes instead of
+    // throwing them away and starting random from scratch every round.
+    int rounds = 3 + refinementStrength;
+    int childrenPerRound = 150 + refinementStrength * 60;
+    for (int round = 0; round < rounds && !stop && !elites.empty(); ++round) {
+        auto parents = elites;
+        for (int child = 0; child < childrenPerRound && !stop; ++child) {
+            size_t parentIndex = static_cast<size_t>(rng() % std::min<size_t>(parents.size(), 10));
+            auto mutated = mutateCandidate(
+                parents[parentIndex].inputs,
+                lvl,
+                frame,
+                horizonFrames,
+                rng
+            );
+            consider(std::move(mutated));
+        }
+
+        if (!elites.empty() && elites.front().trial.complete && elites.front().inputs.size() <= 2)
+            break;
+    }
+
+    if (elites.empty()) {
+        CandidateResult empty;
+        empty.trial = {frame, lvl.latestState().pos.x, lvl.latestState().dead, false};
+        return empty;
+    }
+
+    return elites.front();
+}
+
 PathfinderResult pathfind(
     std::string const& lvlString,
     std::atomic_bool& stop,
@@ -113,7 +353,6 @@ PathfinderResult pathfind(
 
     std::random_device rd;
     std::mt19937 rng(rd());
-    std::uniform_int_distribution<int> frameDist(0, 999);
 
     int trueBest = 0;
     int fail = 1;
@@ -127,71 +366,20 @@ PathfinderResult pathfind(
     while (lvl.latestState().pos.x < lvl.length && !stop) {
         auto frame = lvl.currentFrame();
 
-        std::set<SearchInput> bestInputs;
-        int bestFrame = frame;
-        float bestX = lvl.latestState().pos.x;
-        bool bestComplete = false;
-        size_t bestToggleCount = std::numeric_limits<size_t>::max();
-
-        constexpr int iterations = 300;
-        for (int i = 0; i < iterations && !stop; i++) {
-            std::set<SearchInput> inputs;
-            bool dual = lvl.latestState().dualActive;
-
-            int maxP1 = maxToggleBudget(lvl.latestState().vehicle.type);
-            int maxP2 = dual ? maxP1 : 4;
-            std::uniform_int_distribution<int> p1Budget(0, maxP1);
-            std::uniform_int_distribution<int> p2Budget(0, maxP2);
-
-            int p1Candidates = p1Budget(rng);
-            int p2Candidates = p2Budget(rng);
-
-            for (int j = 0; j < p1Candidates; ++j) {
-                uint32_t candidateFrame = static_cast<uint32_t>(frame + frameDist(rng));
-                inputs.insert(inputKey(candidateFrame, false));
-            }
-            for (int j = 0; j < p2Candidates; ++j) {
-                uint32_t candidateFrame = static_cast<uint32_t>(frame + frameDist(rng));
-                inputs.insert(inputKey(candidateFrame, true));
-            }
-
-            auto trial = tryInputs(lvl, inputs);
-
-            // Finishing the level always beats merely surviving farther in the
-            // fixed look-ahead. Otherwise an early completion at +500 frames
-            // could lose to a non-completing path that survives all +1000.
-            bool better = false;
-            if (trial.complete != bestComplete) {
-                better = trial.complete;
-            } else if (trial.frame != bestFrame) {
-                better = trial.frame > bestFrame;
-            } else if (trial.x != bestX) {
-                better = trial.x > bestX;
-            } else {
-                better = inputs.size() < bestToggleCount;
-            }
-
-            if (better) {
-                bestFrame = trial.frame;
-                bestX = trial.x;
-                bestComplete = trial.complete;
-                bestToggleCount = inputs.size();
-                bestInputs = std::move(inputs);
-
-                if (bestComplete && bestToggleCount <= 2)
-                    break;
-
-                // Once a candidate survives the full look-ahead with almost no
-                // input, spending all remaining attempts usually only adds noise.
-                if (bestFrame - frame >= 1000 && bestToggleCount <= 2 && i > 40)
-                    break;
-            }
-        }
+        // Spend more time thinking when progress is difficult. Normal sections
+        // use a 6.25 second look-ahead; repeated stalls ramp that toward 10 sec
+        // and also add extra refinement rounds/candidates.
+        int difficulty = std::min(4, recoveryCount + stagnantRounds / 4);
+        int horizonFrames = 1500 + difficulty * 225;
+        auto best = searchBestInputs(lvl, stop, rng, horizonFrames, difficulty);
 
         if (stop)
             break;
 
-        if (bestFrame == frame) {
+        int bestFrame = best.trial.frame;
+        bool bestComplete = best.trial.complete;
+
+        if (bestFrame == frame || best.trial.x <= lvl.latestState().pos.x) {
             lvl.rollback(std::max(std::max(frame - fail, trueBest - numAway), 1));
             lvl.syncPresses();
 
@@ -200,8 +388,8 @@ PathfinderResult pathfind(
                 numAway += 1000;
                 fail = 1;
 
-                if (numAway > 10000) {
-                    numAway = 1000;
+                if (numAway > 12000) {
+                    numAway = 1500;
                     trueBest = 0;
                     lvl.rollback(1);
                     lvl.syncPresses();
@@ -210,19 +398,19 @@ PathfinderResult pathfind(
                 fail += 50;
             }
         } else {
-            // Commit only the safer first part of the winning trial. If the
-            // trial reaches the end, commit through the actual completion so a
-            // solved candidate cannot get diluted by another search round.
+            // Keep more of a route only when it actually reaches the end.
+            // Otherwise commit roughly the first half so the solver repeatedly
+            // re-checks the future instead of blindly trusting a long forecast.
             int applyUntil = bestComplete
                 ? bestFrame
-                : bestFrame - static_cast<int>((bestFrame - frame) / 1.5);
+                : frame + std::max(1, (bestFrame - frame) / 2);
 
             for (int i = frame; i < applyUntil && !lvl.latestState().dead; ++i) {
                 auto p1 = inputKey(static_cast<uint32_t>(i), false);
                 auto p2 = inputKey(static_cast<uint32_t>(i), true);
-                if (bestInputs.contains(p1))
+                if (best.inputs.contains(p1))
                     lvl.press1 = !lvl.press1;
-                if (bestInputs.contains(p2))
+                if (best.inputs.contains(p2))
                     lvl.press2 = !lvl.press2;
 
                 lvl.runFrame(lvl.press1, lvl.press2, 1.f / 240.f);
@@ -237,26 +425,22 @@ PathfinderResult pathfind(
             numAway = 1000;
         }
 
-        // Track real level progress, not just simulated time. A solver can burn
-        // thousands of frames around the same obstacle while its frame counter
-        // keeps climbing; that is the 50-70% "stuck" behavior we want to catch.
         if (!lvl.latestState().dead && lvl.latestState().pos.x > furthestX + 1.f) {
             furthestX = lvl.latestState().pos.x;
             lvlBest = lvl;
             stagnantRounds = 0;
-            recoveryCount = 0;
+            // Keep a little memory of recent difficulty rather than dropping all
+            // the way back to shallow search after moving forward by one pixel.
+            recoveryCount = std::max(0, recoveryCount - 1);
         } else {
             ++stagnantRounds;
         }
 
-        // Hard stall recovery: restore the furthest real path, back up by a
-        // progressively larger window, reseed, then search the obstacle from a
-        // genuinely different approach instead of oscillating forever.
-        if (stagnantRounds >= 12 && lvlBest.currentFrame() > 2) {
+        if (stagnantRounds >= 8 && lvlBest.currentFrame() > 2) {
             lvl = lvlBest;
             int retreat = std::min(
                 lvlBest.currentFrame() - 1,
-                480 * (1 + std::min(recoveryCount, 10))
+                720 * (1 + std::min(recoveryCount, 10))
             );
             lvl.rollback(std::max(1, lvlBest.currentFrame() - retreat));
             lvl.syncPresses();
@@ -264,7 +448,7 @@ PathfinderResult pathfind(
             ++recoveryCount;
             stagnantRounds = 0;
             fail = 1;
-            numAway = std::min(6000, 1000 + recoveryCount * 500);
+            numAway = std::min(9000, 1500 + recoveryCount * 750);
             rng.seed(rd() ^ static_cast<unsigned int>(lvl.currentFrame() + recoveryCount * 7919));
         }
 
