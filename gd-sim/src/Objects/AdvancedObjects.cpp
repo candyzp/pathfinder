@@ -81,7 +81,10 @@ void TeleportPortal::collide(Player& p) const {
 }
 
 GameplayTrigger::GameplayTrigger(Vec2D size, std::unordered_map<int, std::string>&& fields)
-    : EffectObject(size, std::move(fields)) {
+    : EffectObject(size, std::unordered_map<int, std::string>(fields)) {
+    touchTriggered = boolField(fields, 11);
+    spawnTriggered = boolField(fields, 62);
+
     switch (std::stoi(fields[1])) {
         case 2066:
             type = GameplayTriggerType::Gravity;
@@ -112,6 +115,17 @@ GameplayTrigger::GameplayTrigger(Vec2D size, std::unordered_map<int, std::string
 }
 
 bool GameplayTrigger::touching(Player const& p) const {
+    // Spawn-triggered effects are remote/group-controlled in real GD. Until the
+    // simulator has a full spawn graph, auto-firing them on X-crossing is much
+    // worse than leaving them dormant because it can cause fake teleports/endings.
+    if (spawnTriggered)
+        return false;
+
+    // Touch-triggered effects care about actual player overlap, including Y.
+    if (touchTriggered)
+        return EffectObject::touching(p);
+
+    // Normal gameplay triggers fire when the player crosses their X position.
     return crossesTriggerX(*this, p);
 }
 
@@ -155,11 +169,17 @@ PlayerControlTrigger::PlayerControlTrigger(Vec2D size, std::unordered_map<int, s
     stopMove = boolField(fields, 541);
     stopRotation = boolField(fields, 542);
     stopSlide = boolField(fields, 543);
+    touchTriggered = boolField(fields, 11);
+    spawnTriggered = boolField(fields, 62);
 }
 
 bool PlayerControlTrigger::touching(Player const& p) const {
     if ((p.player2 && !targetP2) || (!p.player2 && !targetP1))
         return false;
+    if (spawnTriggered)
+        return false;
+    if (touchTriggered)
+        return EffectObject::touching(p);
     return crossesTriggerX(*this, p);
 }
 
