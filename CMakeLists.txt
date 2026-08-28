@@ -26,14 +26,14 @@ add_subdirectory(gd-sim)
 CPMAddPackage("gh:camila314/UIBuilder#main")
 CPMAddPackage("gh:maxnut/GDReplayFormat#gdr2")
 
-# add custom target to strip binary
-if (APPLE)
+# The old strip target is for desktop macOS. Geode's iOS pipeline produces an
+# arm64 iPhoneOS dylib and should be left untouched for packaging/signing.
+if (APPLE AND NOT GEODE_TARGET_PLATFORM STREQUAL "iOS")
 add_custom_target(strip ALL
     COMMAND $<$<CONFIG:Debug>:echo> strip -x $<TARGET_FILE:${PROJECT_NAME}>
     DEPENDS ${PROJECT_NAME}
 )
 endif()
-
 
 setup_geode_mod(${PROJECT_NAME})
 target_compile_definitions(${PROJECT_NAME} PRIVATE $<$<CONFIG:Debug>:-DDEBUG_MODE=1>)
