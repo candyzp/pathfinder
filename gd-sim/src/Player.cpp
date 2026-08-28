@@ -152,7 +152,7 @@ void Player::postCollision() {
 }
 
 Player::Player() :
-	Entity({{0, 15}, {30, 30}, 0}), frame(1), timeElapsed(0), dead(false),
+	Entity({{0, 15}, {30, 30}, 0}), frame(1), timeElapsed(0), dead(false), completed(false),
 	vehicle(Vehicle::from(VehicleType::Cube)), ceiling(999999), floor(0), grounded(true),
 	coyoteFrames(0), acceleration(0), velocity(0), robotBoostTime(0),
 	dashAngle(0), dashSpeed(0), gravityScale(1.f), timeWarp(1.f), direction(1),
