@@ -12,12 +12,14 @@
 class Level {
 	/// Called by constructor, applies level settings to the initial player state
 	void initLevelSettings(std::string const& lvlSettings, Player& player);
+	void simulatePlayer(Player& player, bool pressed, float dt);
  public:
  	/**
  	 * All player states are stored, including previous states. This way, Pathfinder
  	 * is able to seamlessly rewind when searching for solutions.
  	 */
 	std::vector<Player> gameStates;
+	std::vector<Player> gameStates2;
 
 	size_t objectCount = 0;
 
@@ -33,11 +35,16 @@ class Level {
 
  	/// The main update function. Every frame is associated with a press/release state.
  	Player& runFrame(bool pressed, float dt = 1/240.);
+	Player& runFrame(bool player1Pressed, bool player2Pressed, float dt);
 
  	/// Go back to a certain frame. Used in Pathfinder.
  	void rollback(int frame);
 
+	/// Find the nearest solid surface above or below a player. Used by spider mechanics.
+	float findOppositeSurface(Player const& player, bool towardsCeiling) const;
+
  	int currentFrame() const;
- 	Player const& getState(int frame) const;
+ 	Player const& getState(int frame, bool player2 = false) const;
  	Player& latestState();
+	Player& latestState2();
 };
