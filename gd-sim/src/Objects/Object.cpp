@@ -12,7 +12,6 @@
 #include <Slope.hpp>
 #include <AdvancedObjects.hpp>
 
-/// Helper classes and functions to make assigning object IDs easier
 struct range : public std::pair<int, int> {
 	range(int i) : std::pair<int, int>({i, i}) {}
 	range(int i, int j) : std::pair<int, int>({i, j}) {}
@@ -37,23 +36,15 @@ std::optional<ObjectContainer> Object::create(std::unordered_map<int, std::strin
 	auto id = std::stoi(ob[1]);
 
 	objs(({
-		{1, 4}, {6, 7}, 63, {69, 72},
-		{74, 78}, {81, 83}, {90, 96},
-		{116, 119}, {121, 122}, 146,
-		{160, 163}, {165, 169}, 173,
-		175, {207, 210}, {212, 213},
-		{247, 250}, {252, 258},
-		{260, 261}, {263, 265},
-		{267, 272}, {274, 275},
-		467, {469, 471}, {1203, 1204},
+		{1, 4}, {6, 7}, 63, {69, 72}, {74, 78}, {81, 83}, {90, 96},
+		{116, 119}, {121, 122}, 146, {160, 163}, {165, 169}, 173,
+		175, {207, 210}, {212, 213}, {247, 250}, {252, 258}, {260, 261},
+		{263, 265}, {267, 272}, {274, 275}, 467, {469, 471}, {1203, 1204},
 		{1209, 1210}, {1221, 1222}, 1226
 	}), Block, 30, 30)
-	objs((
-		{ 64, 195, 206, 220, 661,
-		{1155, 1157}, 1208, 1910
-	}), Block, 15, 15)
+	objs(({ 64, 195, 206, 220, 661, {1155, 1157}, 1208, 1910 }), Block, 15, 15)
 	objs(({ 40, 147, 215, {369, 370}, {1903, 1905} }), Block, 30, 14)
-	objs(({ { 170, 172 }, 174, 192 }), Block, 30, 21)
+	objs(({ {170, 172}, 174, 192 }), Block, 30, 21)
 	objs(({ 468, 475, 1260 }), Block, 30, 1.5)
 	objs(({ 62, 65, 66, 68 }), Block, 30, 16)
 	objs(({ 1202, 1262 }), Block, 30, 3)
@@ -123,21 +114,20 @@ std::optional<ObjectContainer> Object::create(std::unordered_map<int, std::strin
 	objs(({ 1707 }), Sawblade, 12, 12)
 	objs(({ {1701, 1703} }), Sawblade, 6, 6)
 
-	// Pads and orbs, including modern dash/spider variants.
 	objs(({ 35, 67, 140, 1332, 3005 }), Pad, 25, 6)
 	objs(({ 36, 84, 141, 1022, 1330, 1333, 1704, 1751, 3004, 3027 }), Orb, 36, 36)
 
-	// Game-mode and state portals.
 	objs(({ 12, 13, 47, 111, 660, 745, 1331, 1933 }), VehiclePortal, 34, 86)
 	objs(({ 10, 11, 2926 }), GravityPortal, 25, 75)
 	objs(({ 286, 287 }), DualPortal, 34, 86)
 	objs(({ 747 }), TeleportPortal, 34, 86)
 	objs(({ 99, 101 }), SizePortal, 31, 90)
 
-	// 2.1/2.2 modifier blocks. These are invisible gameplay objects, so a broad
-	// hitbox is intentional: the authored scale fields narrow/expand it as needed.
 	objs(({ 1755, 1813, 1829, 1859, 2866 }), ModifierBlock, 30, 30)
 	objs(({ 2069 }), ForceBlock, 30, 30)
+
+	// Physics-affecting non-visual triggers. Visual-only/camera/shader triggers are ignored.
+	objs(({ 1917, 1931, 1935, 2066, 2900, 3600 }), GameplayTrigger, 2, 2)
 
 	objs(({ 143 }), BreakableBlock, 30, 30)
 
@@ -163,13 +153,11 @@ std::optional<ObjectContainer> Object::create(std::unordered_map<int, std::strin
 	}), Slope, 60, 30)
 	objs(({ 364, 366, 1718 }), SlopeHazard, 60, 30);
 
-	// Decorative and unsupported non-collision objects are deliberately ignored.
 	return {};
 }
 
 Object::Object(Vec2D s, std::unordered_map<int, std::string>&& fields) {
 	size = s;
-
 	pos.x = stod_def(fields[2]);
 	pos.y = stod_def(fields[3]);
 	rotation = -stod_def(fields[6]);
@@ -178,17 +166,17 @@ Object::Object(Vec2D s, std::unordered_map<int, std::string>&& fields) {
 	float scale = stod_def(fields[32], 1);
 	float scalex = stod_def(fields[128], 1);
 	float scaley = stod_def(fields[129], 1);
-
 	size.x *= scale * scalex;
 	size.y *= scale * scaley;
 }
 
 bool Object::touching(Player const& player) const {
 	int r = std::abs((int)rotation) % 360;
-	return intersects((r == 0 || r == 90 || r == 180 || r == 270) ? player.unrotatedHitbox() : static_cast<Entity const&>(player));
+	return intersects((r == 0 || r == 90 || r == 180 || r == 270)
+		? player.unrotatedHitbox()
+		: static_cast<Entity const&>(player));
 }
 
 void Object::collide(Player&) const {
-	// Unreachable
 	abort();
 }
