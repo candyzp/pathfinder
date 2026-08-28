@@ -8,6 +8,10 @@ enum class OrbType {
 	Red,
 	Green,
 	Black,
+	Dash,
+	GravityDash,
+	Spider,
+	Teleport,
 };
 
 struct Orb : public EffectObject {
