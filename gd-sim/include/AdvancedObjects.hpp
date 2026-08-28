@@ -32,10 +32,10 @@ enum class GameplayTriggerType {
 	GameplayRotation
 };
 
-/// Position-activated, non-visual triggers that alter player physics/pathing.
 struct GameplayTrigger : public EffectObject {
 	GameplayTriggerType type;
 	float value;
 	GameplayTrigger(Vec2D size, std::unordered_map<int, std::string>&& fields);
+	bool touching(Player const&) const override;
 	void collide(Player&) const override;
 };
