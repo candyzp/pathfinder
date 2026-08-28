@@ -21,6 +21,7 @@ struct Level2 : public Level {
 		for (auto& section : sections) {
 			for (auto& object : section)
 				highestY = std::max(highestY, object->pos.y);
+		}
 	}
 
 	void syncPresses() {
