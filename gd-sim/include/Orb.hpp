@@ -1,5 +1,6 @@
 #pragma once
 #include <EffectObject.hpp>
+#include <Teleport.hpp>
 
 enum class OrbType {
 	Yellow,
@@ -16,6 +17,7 @@ enum class OrbType {
 
 struct Orb : public EffectObject {
 	OrbType type;
+	TeleportConfig teleport;
 
 	Orb(Vec2D size, std::unordered_map<int, std::string>&& fields);
 	bool touching(Player const&) const override;
