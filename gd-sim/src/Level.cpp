@@ -290,11 +290,24 @@ Player& Level::runFrame(bool pressed, float dt) {
 }
 
 Player& Level::runFrame(bool player1Pressed, bool player2Pressed, float dt) {
-	Player p1 = gameStates.back();
-	Player p2 = gameStates2.back();
+	Player p1Before = gameStates.back();
+	Player p2Before = gameStates2.back();
+	Player p1 = p1Before;
+	Player p2 = p2Before;
 	bool wasDual = p1.dualActive;
 
+	auto detectNaturalFinish = [this](Player const& before, Player& after) {
+		constexpr float maxNaturalFinishStep = 120.f;
+		float step = after.pos.x - before.pos.x;
+		if (!after.dead && !after.completed &&
+			before.pos.x < length && after.pos.x >= length &&
+			step >= 0.f && step <= maxNaturalFinishStep) {
+			after.completed = true;
+		}
+	};
+
 	simulatePlayer(p1, player1Pressed, dt);
+	detectNaturalFinish(p1Before, p1);
 
 	if (p1.dualActive) {
 		if (!wasDual) {
@@ -309,6 +322,7 @@ Player& Level::runFrame(bool player1Pressed, bool player2Pressed, float dt) {
 		} else {
 			p2.dualActive = true;
 			simulatePlayer(p2, player2Pressed, dt);
+			detectNaturalFinish(p2Before, p2);
 
 			if (!p2.dualActive)
 				p1.dualActive = false;
