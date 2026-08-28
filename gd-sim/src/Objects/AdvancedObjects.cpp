@@ -143,7 +143,9 @@ void GameplayTrigger::collide(Player& p) const {
             p.direction *= -1;
             break;
         case GameplayTriggerType::End:
-            p.pos.x = p.level->length + 1.0f;
+            // Completion is gameplay state, not a teleport. Keeping X untouched
+            // prevents End Triggers from poisoning progress and recovery ranking.
+            p.completed = true;
             break;
         case GameplayTriggerType::GameplayRotation: {
             // Full vertical channels need 2D horizontal velocity. Horizontal rotations
