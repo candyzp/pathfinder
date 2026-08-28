@@ -3,6 +3,7 @@
 #include <unordered_map>
 #include <cstring>
 #include <optional>
+#include <cstddef>
 
 struct ObjectContainer;
 struct Player;
@@ -12,7 +13,7 @@ struct Object : public Entity {
     int id;
 
     /**
-     * In GD, some objects have their collision checks later than others (blocks, hazards). 
+     * In GD, some objects have their collision checks later than others (blocks, hazards).
      * A higher prio numbers means collisions are processed later.
      */
     int prio;
@@ -31,25 +32,23 @@ struct Object : public Entity {
 };
 
 /**
- * In the simulator, there are many classes that subclass Object. Some of these add member variables
- * and all of them have virtual overrides. Under normal circumstances, this would require every Object
- * class to be dynamically allocated, which is inefficient.
- * 
- * ObjectContainer provides a solution to this by storing every created Object subclass in a padded
- * container class. Doing this instead of dynamic allocation not only saves time from heap allocation,
- * it also allows for better CPU caching since all Object classes are stored contiguously in memory.
+ * Stores polymorphic simulator objects inline to avoid a heap allocation per level object.
+ * Modern 2.2 objects carry more setup state than the old eight-byte padding allowed, so
+ * keep a larger aligned payload while preserving the same contiguous-storage design.
  */
 struct ObjectContainer {
-    char buffer[sizeof(Object) + 0x8] = {0};
+    static constexpr size_t extraStorage = 0x80;
+    alignas(std::max_align_t) std::byte buffer[sizeof(Object) + extraStorage]{};
 
-    ObjectContainer(ObjectContainer& cont) { memcpy(buffer, cont.buffer, sizeof(buffer)); }
-    ObjectContainer(ObjectContainer const& cont) { memcpy(buffer, cont.buffer, sizeof(buffer)); }
+    ObjectContainer(ObjectContainer& cont) { std::memcpy(buffer, cont.buffer, sizeof(buffer)); }
+    ObjectContainer(ObjectContainer const& cont) { std::memcpy(buffer, cont.buffer, sizeof(buffer)); }
 
     template <class T>
     ObjectContainer(T&& obj) {
-        static_assert(sizeof(T) <= sizeof(buffer));
-        memcpy(buffer, (void*)&obj, sizeof(T));
+        static_assert(sizeof(T) <= sizeof(buffer), "Object subclass exceeds ObjectContainer storage");
+        std::memcpy(buffer, static_cast<void const*>(&obj), sizeof(T));
     }
+
     Object const* operator->() const {
         return reinterpret_cast<Object const*>(buffer);
     }
