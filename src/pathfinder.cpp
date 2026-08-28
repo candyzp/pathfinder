@@ -41,6 +41,7 @@ struct TrialResult {
     int frame = 0;
     float x = 0.f;
     bool dead = false;
+    bool complete = false;
 };
 
 static int maxToggleBudget(VehicleType type) {
@@ -86,11 +87,12 @@ static TrialResult tryInputs(Level2& lvl, std::set<SearchInput> const& inputs) {
     TrialResult result {
         lvl.currentFrame(),
         lvl.latestState().pos.x,
-        lvl.latestState().dead
+        lvl.latestState().dead,
+        !lvl.latestState().dead && lvl.latestState().pos.x >= lvl.length
     };
 
     float lastY = lvl.latestState().pos.y;
-    if (result.x < lvl.length &&
+    if (!result.complete && result.x < lvl.length &&
         (lastY > std::max(1300.f, lvl.highestY + 600.f) || lastY < -600.f)) {
         result.frame = startFrame;
         result.dead = true;
@@ -127,10 +129,12 @@ PathfinderResult pathfind(
 
         std::set<SearchInput> bestInputs;
         int bestFrame = frame;
+        float bestX = lvl.latestState().pos.x;
+        bool bestComplete = false;
         size_t bestToggleCount = std::numeric_limits<size_t>::max();
 
         constexpr int iterations = 300;
-        for (int i = 0; i < iterations; i++) {
+        for (int i = 0; i < iterations && !stop; i++) {
             std::set<SearchInput> inputs;
             bool dual = lvl.latestState().dualActive;
 
@@ -152,11 +156,30 @@ PathfinderResult pathfind(
             }
 
             auto trial = tryInputs(lvl, inputs);
-            if (trial.frame > bestFrame ||
-                (trial.frame == bestFrame && inputs.size() < bestToggleCount)) {
+
+            // Finishing the level always beats merely surviving farther in the
+            // fixed look-ahead. Otherwise an early completion at +500 frames
+            // could lose to a non-completing path that survives all +1000.
+            bool better = false;
+            if (trial.complete != bestComplete) {
+                better = trial.complete;
+            } else if (trial.frame != bestFrame) {
+                better = trial.frame > bestFrame;
+            } else if (trial.x != bestX) {
+                better = trial.x > bestX;
+            } else {
+                better = inputs.size() < bestToggleCount;
+            }
+
+            if (better) {
                 bestFrame = trial.frame;
+                bestX = trial.x;
+                bestComplete = trial.complete;
                 bestToggleCount = inputs.size();
                 bestInputs = std::move(inputs);
+
+                if (bestComplete && bestToggleCount <= 2)
+                    break;
 
                 // Once a candidate survives the full look-ahead with almost no
                 // input, spending all remaining attempts usually only adds noise.
@@ -164,6 +187,9 @@ PathfinderResult pathfind(
                     break;
             }
         }
+
+        if (stop)
+            break;
 
         if (bestFrame == frame) {
             lvl.rollback(std::max(std::max(frame - fail, trueBest - numAway), 1));
@@ -184,9 +210,13 @@ PathfinderResult pathfind(
                 fail += 50;
             }
         } else {
-            // Commit only the safer first part of the winning trial. The rest
-            // stays as look-ahead and gets re-evaluated from the next state.
-            int applyUntil = bestFrame - static_cast<int>((bestFrame - frame) / 1.5);
+            // Commit only the safer first part of the winning trial. If the
+            // trial reaches the end, commit through the actual completion so a
+            // solved candidate cannot get diluted by another search round.
+            int applyUntil = bestComplete
+                ? bestFrame
+                : bestFrame - static_cast<int>((bestFrame - frame) / 1.5);
+
             for (int i = frame; i < applyUntil && !lvl.latestState().dead; ++i) {
                 auto p1 = inputKey(static_cast<uint32_t>(i), false);
                 auto p2 = inputKey(static_cast<uint32_t>(i), true);
