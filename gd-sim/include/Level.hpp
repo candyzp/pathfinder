@@ -5,6 +5,11 @@
 #include <unordered_map>
 #include <optional>
 
+struct UnsupportedObjectInfo {
+	int objectID = 0;
+	Entity entity;
+};
+
 /**
  * In order to use the simulator, you must create a Level. The Level class is
  * the root class of everything else, containing both objects and player states,
@@ -31,7 +36,16 @@ class Level {
 	/// decorative objects too, because teleport targets are often invisible helpers.
 	std::unordered_map<int, std::vector<Entity>> groupTargets;
 
-	float length = 0.0;
+	/// Objects that exist in the level string but do not yet have a simulator class.
+	/// They are kept as metadata instead of silently disappearing or pretending to collide.
+	std::vector<UnsupportedObjectInfo> unsupportedObjects;
+
+	/// Furthest authored coordinate, including decorations/helpers. This is metadata only.
+	/// It must never be used as the playable completion point by itself.
+	float authoredExtent = 0.0f;
+
+	/// Playable level end used by the physics solver and progress counter.
+	float length = 0.0f;
 
 	static constexpr uint32_t sectionSize = 100;
 	bool debug = false;
