@@ -11,6 +11,7 @@
 #include <Orb.hpp>
 #include <Slope.hpp>
 #include <AdvancedObjects.hpp>
+#include <Teleport.hpp>
 
 struct range : public std::pair<int, int> {
 	range(int i) : std::pair<int, int>({i, i}) {}
@@ -121,6 +122,7 @@ std::optional<ObjectContainer> Object::create(std::unordered_map<int, std::strin
 	objs(({ 10, 11, 2926 }), GravityPortal, 25, 75)
 	objs(({ 286, 287 }), DualPortal, 34, 86)
 	objs(({ 747 }), TeleportPortal, 34, 86)
+	objs(({ 2902 }), UnlinkedTeleportPortal, 34, 86)
 	objs(({ 99, 101 }), SizePortal, 31, 90)
 
 	objs(({ 1755, 1813, 1829, 1859, 2866 }), ModifierBlock, 30, 30)
@@ -128,6 +130,7 @@ std::optional<ObjectContainer> Object::create(std::unordered_map<int, std::strin
 
 	// Physics-affecting non-visual triggers. Visual-only/camera/shader triggers are ignored.
 	objs(({ 1917, 1931, 1935, 2066, 2900, 3600 }), GameplayTrigger, 2, 2)
+	objs(({ 3022 }), TeleportTrigger, 2, 2)
 
 	objs(({ 143 }), BreakableBlock, 30, 30)
 
