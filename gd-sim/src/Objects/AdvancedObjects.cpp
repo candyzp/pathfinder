@@ -1,7 +1,9 @@
 #include <AdvancedObjects.hpp>
 #include <Portals.hpp>
 #include <Player.hpp>
+#include <Level.hpp>
 #include <cmath>
+#include <algorithm>
 
 ModifierBlock::ModifierBlock(Vec2D size, std::unordered_map<int, std::string>&& fields)
     : Object(size, std::move(fields)) {
@@ -18,41 +20,26 @@ ModifierBlock::ModifierBlock(Vec2D size, std::unordered_map<int, std::string>&& 
 
 void ModifierBlock::collide(Player& p) const {
     switch (type) {
-        case ModifierType::D:
-            p.dBlock = true;
-            break;
+        case ModifierType::D: p.dBlock = true; break;
         case ModifierType::J:
             p.jBlock = true;
-            // J blocks specifically kill a carried/buffered jump.
             p.buffer = false;
             break;
-        case ModifierType::S:
-            p.dashing = false;
-            break;
-        case ModifierType::H:
-            p.hBlock = true;
-            break;
-        case ModifierType::F:
-            p.fBlock = true;
-            break;
+        case ModifierType::S: p.dashing = false; break;
+        case ModifierType::H: p.hBlock = true; break;
+        case ModifierType::F: p.fBlock = true; break;
     }
 }
 
 ForceBlock::ForceBlock(Vec2D size, std::unordered_map<int, std::string>&& fields)
     : Object(size, std::move(fields)) {
     prio = 0;
-    // 2.2 force blocks expose multiple editor modes. Preserve the authored rotation
-    // and use a conservative default strength when an older/unknown serialization omits it.
     force = stod_def(fields[10], 1.0f);
-    if (std::abs(force) < 0.001f)
-        force = 1.0f;
+    if (std::abs(force) < 0.001f) force = 1.0f;
     direction = rotation;
 }
 
 void ForceBlock::collide(Player& p) const {
-    // The simulator stores only vertical inertia; horizontal force is represented by
-    // forward progress, so project the force onto Y. This still makes vertical/angled
-    // force blocks affect path viability without corrupting the level's base speed.
     p.velocity += std::sin(deg2rad(direction)) * 900.0f * force * p.dt;
 }
 
@@ -66,14 +53,80 @@ void DualPortal::collide(Player& p) const {
 
 TeleportPortal::TeleportPortal(Vec2D size, std::unordered_map<int, std::string>&& fields)
     : EffectObject(size, std::move(fields)) {
-    // Linked teleport portals serialize the exit displacement on key 54.
     yOffset = stod_def(fields[54], 0.0f);
-    smooth = std::stoi(fields[55].empty() ? "0" : fields[55]) != 0;
+    smooth = !fields[55].empty() && std::stoi(fields[55]) != 0;
 }
 
 void TeleportPortal::collide(Player& p) const {
     EffectObject::collide(p);
     p.pos.y += yOffset;
-    // Smooth teleports preserve velocity; non-smooth ones in GD still preserve the
-    // vertical component for standard gameplay, so no velocity reset is needed here.
+}
+
+GameplayTrigger::GameplayTrigger(Vec2D size, std::unordered_map<int, std::string>&& fields)
+    : EffectObject(size, std::move(fields)) {
+    switch (std::stoi(fields[1])) {
+        case 2066:
+            type = GameplayTriggerType::Gravity;
+            value = stod_def(fields[148], 1.0f);
+            break;
+        case 1935:
+            type = GameplayTriggerType::TimeWarp;
+            value = stod_def(fields[120], 1.0f);
+            break;
+        case 1917:
+            type = GameplayTriggerType::Reverse;
+            value = 0;
+            break;
+        case 1931:
+        case 3600:
+            type = GameplayTriggerType::End;
+            value = 0;
+            break;
+        case 2900:
+            type = GameplayTriggerType::GameplayRotation;
+            value = rotation;
+            break;
+        default:
+            type = GameplayTriggerType::Gravity;
+            value = 1.0f;
+            break;
+    }
+}
+
+bool GameplayTrigger::touching(Player const& p) const {
+    if (p.usedEffects.contains(id))
+        return false;
+
+    float a = p.prevPlayer().pos.x;
+    float b = p.pos.x;
+    float low = std::min(a, b) - 1.0f;
+    float high = std::max(a, b) + 1.0f;
+    return pos.x >= low && pos.x <= high;
+}
+
+void GameplayTrigger::collide(Player& p) const {
+    EffectObject::collide(p);
+
+    switch (type) {
+        case GameplayTriggerType::Gravity:
+            p.gravityScale = std::clamp(value, 0.0f, 10.0f);
+            break;
+        case GameplayTriggerType::TimeWarp:
+            p.timeWarp = std::clamp(value, 0.05f, 4.0f);
+            break;
+        case GameplayTriggerType::Reverse:
+            p.direction *= -1;
+            break;
+        case GameplayTriggerType::End:
+            p.pos.x = p.level->length + 1.0f;
+            break;
+        case GameplayTriggerType::GameplayRotation: {
+            // Full 90-degree gameplay channels require 2D horizontal velocity, which this
+            // simulator does not store yet. Horizontal arrow directions are still exact.
+            float horizontal = std::cos(deg2rad(value));
+            if (std::abs(horizontal) >= 0.7f)
+                p.direction = horizontal >= 0 ? 1 : -1;
+            break;
+        }
+    }
 }
