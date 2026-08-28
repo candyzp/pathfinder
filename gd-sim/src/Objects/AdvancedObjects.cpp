@@ -5,6 +5,24 @@
 #include <cmath>
 #include <algorithm>
 
+namespace {
+bool crossesTriggerX(Object const& trigger, Player const& p) {
+    if (p.usedEffects.contains(trigger.id))
+        return false;
+
+    float a = p.prevPlayer().pos.x;
+    float b = p.pos.x;
+    float low = std::min(a, b) - 1.0f;
+    float high = std::max(a, b) + 1.0f;
+    return trigger.pos.x >= low && trigger.pos.x <= high;
+}
+
+bool boolField(std::unordered_map<int, std::string> const& fields, int key) {
+    auto it = fields.find(key);
+    return it != fields.end() && !it->second.empty() && atoi(it->second.c_str()) != 0;
+}
+}
+
 ModifierBlock::ModifierBlock(Vec2D size, std::unordered_map<int, std::string>&& fields)
     : Object(size, std::move(fields)) {
     prio = 0;
@@ -94,14 +112,7 @@ GameplayTrigger::GameplayTrigger(Vec2D size, std::unordered_map<int, std::string
 }
 
 bool GameplayTrigger::touching(Player const& p) const {
-    if (p.usedEffects.contains(id))
-        return false;
-
-    float a = p.prevPlayer().pos.x;
-    float b = p.pos.x;
-    float low = std::min(a, b) - 1.0f;
-    float high = std::max(a, b) + 1.0f;
-    return pos.x >= low && pos.x <= high;
+    return crossesTriggerX(*this, p);
 }
 
 void GameplayTrigger::collide(Player& p) const {
@@ -121,12 +132,56 @@ void GameplayTrigger::collide(Player& p) const {
             p.pos.x = p.level->length + 1.0f;
             break;
         case GameplayTriggerType::GameplayRotation: {
-            // Full 90-degree gameplay channels require 2D horizontal velocity, which this
-            // simulator does not store yet. Horizontal arrow directions are still exact.
+            // Full vertical channels need 2D horizontal velocity. Horizontal rotations
+            // are exact here and vertical channels remain intentionally conservative.
             float horizontal = std::cos(deg2rad(value));
             if (std::abs(horizontal) >= 0.7f)
                 p.direction = horizontal >= 0 ? 1 : -1;
             break;
         }
+    }
+}
+
+PlayerControlTrigger::PlayerControlTrigger(Vec2D size, std::unordered_map<int, std::string>&& fields)
+    : EffectObject(size, std::unordered_map<int, std::string>(fields)) {
+    targetP1 = boolField(fields, 138);
+    targetP2 = boolField(fields, 200);
+    if (!targetP1 && !targetP2) {
+        targetP1 = true;
+        targetP2 = true;
+    }
+
+    stopJump = boolField(fields, 540);
+    stopMove = boolField(fields, 541);
+    stopRotation = boolField(fields, 542);
+    stopSlide = boolField(fields, 543);
+}
+
+bool PlayerControlTrigger::touching(Player const& p) const {
+    if ((p.player2 && !targetP2) || (!p.player2 && !targetP1))
+        return false;
+    return crossesTriggerX(*this, p);
+}
+
+void PlayerControlTrigger::collide(Player& p) const {
+    EffectObject::collide(p);
+
+    if (stopJump) {
+        p.buffer = false;
+        p.vehicleBuffer = false;
+        p.input = false;
+    }
+
+    // stopMove is a platformer control and Pathfinder's classic solver has no manual
+    // horizontal axis, so it must not stop automatic level progression.
+    (void)stopMove;
+
+    if (stopRotation)
+        p.rotation = 0;
+
+    if (stopSlide) {
+        p.slopeData.slope = {};
+        p.slopeData.elapsed = 0;
+        p.slopeData.snapDown = false;
     }
 }
