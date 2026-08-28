@@ -10,7 +10,8 @@ struct VehiclePortal : public EffectObject {
 };
 
 struct GravityPortal : public EffectObject {
-    bool upsideDown;
+    // 0 = normal gravity, 1 = flipped gravity, 2 = toggle current gravity.
+    int mode;
     GravityPortal(Vec2D size, std::unordered_map<int, std::string>&& fields);
     void collide(Player&) const override;
 };
@@ -24,5 +25,18 @@ struct SizePortal : public EffectObject {
 struct SpeedPortal : public EffectObject {
     int speed;
     SpeedPortal(Vec2D size, std::unordered_map<int, std::string>&& fields);
+    void collide(Player&) const override;
+};
+
+struct DualPortal : public EffectObject {
+    bool enable;
+    DualPortal(Vec2D size, std::unordered_map<int, std::string>&& fields);
+    void collide(Player&) const override;
+};
+
+struct TeleportPortal : public EffectObject {
+    float yOffset;
+    bool smooth;
+    TeleportPortal(Vec2D size, std::unordered_map<int, std::string>&& fields);
     void collide(Player&) const override;
 };
