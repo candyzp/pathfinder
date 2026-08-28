@@ -1,5 +1,6 @@
 #include <set>
 #include <cstdint>
+#include <algorithm>
 #include <Level.hpp>
 #include <random>
 #include <gdr/gdr.hpp>
@@ -20,7 +21,11 @@ struct Level2 : public Level {
 		for (auto& section : sections) {
 			for (auto& object : section)
 				highestY = std::max(highestY, object->pos.y);
-		}
+	}
+
+	void syncPresses() {
+		press1 = latestState().button;
+		press2 = latestState2().button;
 	}
 };
 
@@ -94,9 +99,6 @@ std::vector<uint8_t> pathfind(std::string const& lvlString, std::atomic_bool& st
 		for (int i = 0; i < iterations; i++) {
 			std::set<SearchInput> inputs;
 
-			// Search P1 always. When dual is active, independently search P2 as well.
-			// A few future P2 candidates are also allowed just before dual portals so
-			// the second player is not forced to enter with an arbitrary stale state.
 			bool dual = lvl.latestState().dualActive;
 			int candidateCount = dual ? 54 : 30;
 			for (int j = 0; j < candidateCount; j++) {
@@ -116,6 +118,7 @@ std::vector<uint8_t> pathfind(std::string const& lvlString, std::atomic_bool& st
 
 		if (bestFrame == frame) {
 			lvl.rollback(std::max(std::max(frame - fail, trueBest - numAway), 1));
+			lvl.syncPresses();
 
 			fail += 5;
 			if (fail > numAway + 1000) {
@@ -126,8 +129,7 @@ std::vector<uint8_t> pathfind(std::string const& lvlString, std::atomic_bool& st
 					numAway = 1000;
 					trueBest = 0;
 					lvl.rollback(1);
-					lvl.press1 = false;
-					lvl.press2 = false;
+					lvl.syncPresses();
 				}
 			} else if (fail > 100) {
 				fail += 50;
