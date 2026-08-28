@@ -143,9 +143,13 @@ class PathfinderNode : public CCLayerColor {
     std::string m_levelName;
 
 public:
-    static PathfinderNode* create(std::string const& levelName, std::string const& lvlString) {
+    static PathfinderNode* create(
+        std::string const& levelName,
+        std::string const& lvlString,
+        float trustedEndX = 0.f
+    ) {
         auto* node = new PathfinderNode();
-        if (node && node->init(levelName, lvlString)) {
+        if (node && node->init(levelName, lvlString, trustedEndX)) {
             node->autorelease();
             return node;
         }
@@ -243,18 +247,22 @@ public:
         removeFromParentAndCleanup(true);
     }
 
-    bool init(std::string const& levelName, std::string const& lvlString) {
+    bool init(
+        std::string const& levelName,
+        std::string const& lvlString,
+        float trustedEndX
+    ) {
         if (!CCLayerColor::initWithColor({0, 0, 0, 100}))
             return false;
         setCascadeOpacityEnabled(true);
         m_levelName = levelName;
 
-        m_result = std::async(std::launch::async, [lvlString, this]() {
+        m_result = std::async(std::launch::async, [lvlString, trustedEndX, this]() {
             try {
                 return pathfind(lvlString, m_stop, [this](double progress) {
                     if (m_progress < progress)
                         m_progress = progress;
-                });
+                }, trustedEndX);
             } catch (std::exception const& e) {
                 log::error("Pathfinder failed: {}", e.what());
                 return PathfinderResult {};
@@ -416,9 +424,11 @@ struct PathfinderPauseLayer : geode::Modify<PathfinderPauseLayer, PauseLayer> {
 
             runBtn.intoMenuItem([this]() {
                     if (auto* play = PlayLayer::get(); play && play->m_level) {
+                        float endX = play->getEndPosition().x;
                         Build<PathfinderNode>::create(
                             levelNameOf(play->m_level),
-                            decompressedLevelString(play->m_level)
+                            decompressedLevelString(play->m_level),
+                            endX
                         ).parent(this).zOrder(200);
                     }
                 })
