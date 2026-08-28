@@ -45,11 +45,20 @@ TeleportConfig::TeleportConfig(std::unordered_map<int, std::string> const& field
 }
 
 bool TeleportConfig::apply(Player& p, Vec2D const& sourcePos) const {
-    auto targetOpt = p.level->getGroupTarget(targetGroup);
-    if (!targetOpt)
+    // A 2.2 Teleport Trigger target is supposed to resolve to one target object.
+    // The old simulator used Level::getGroupTarget(), which picks an arbitrary
+    // member when a group contains several objects. On decorated levels that can
+    // fling the simulated player thousands of units forward and permanently poison
+    // Pathfinder's furthest-X progress/checkpoint. Fail closed until a real dynamic
+    // group/parent resolver exists instead of pretending an arbitrary object is valid.
+    if (targetGroup <= 0)
         return false;
 
-    Entity target = *targetOpt;
+    auto groupIt = p.level->groupTargets.find(targetGroup);
+    if (groupIt == p.level->groupTargets.end() || groupIt->second.size() != 1)
+        return false;
+
+    Entity target = groupIt->second.front();
     Vec2D before = p.pos;
     Vec2D destination = target.pos;
 
