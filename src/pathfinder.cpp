@@ -60,71 +60,75 @@ struct CandidateResult {
     TrialResult trial;
 };
 
-static bool betterCandidate(CandidateResult const& a, CandidateResult const& b) {
-    if (a.trial.complete != b.trial.complete)
-        return a.trial.complete;
-    if (a.trial.x != b.trial.x)
-        return a.trial.x > b.trial.x;
-    if (a.trial.dead != b.trial.dead)
-        return !a.trial.dead;
-    if (a.inputs.size() != b.inputs.size())
-        return a.inputs.size() < b.inputs.size();
-    return a.trial.frame > b.trial.frame;
-}
-
-static int maxToggleBudget(VehicleType type) {
-    switch (type) {
-        case VehicleType::Cube:   return 10;
-        case VehicleType::Ship:   return 20;
-        case VehicleType::Ball:   return 10;
-        case VehicleType::Ufo:    return 14;
-        case VehicleType::Wave:   return 24;
-        case VehicleType::Robot:  return 12;
-        case VehicleType::Spider: return 10;
-        case VehicleType::Swing:  return 20;
-    }
-    return 12;
-}
-
 static bool continuousMode(VehicleType type) {
     return type == VehicleType::Ship ||
            type == VehicleType::Wave ||
            type == VehicleType::Swing;
 }
 
-static int denseTimingStep(VehicleType type) {
-    switch (type) {
-        case VehicleType::Ship:
-        case VehicleType::Wave:
-        case VehicleType::Swing:
-            return 4;
-        case VehicleType::Cube:
-        case VehicleType::Ufo:
-        case VehicleType::Robot:
-            return 6;
-        case VehicleType::Ball:
-        case VehicleType::Spider:
-            return 8;
-    }
-    return 6;
+static bool betterCandidate(CandidateResult const& a, CandidateResult const& b) {
+    if (a.trial.complete != b.trial.complete)
+        return a.trial.complete;
+
+    // Tiny X differences are usually noise. If two paths are effectively tied,
+    // prefer the one that stays alive and uses fewer toggles instead of buying
+    // a couple pixels of progress with messy inputs.
+    constexpr float progressTie = 6.f;
+    if (a.trial.x > b.trial.x + progressTie)
+        return true;
+    if (b.trial.x > a.trial.x + progressTie)
+        return false;
+
+    if (a.trial.dead != b.trial.dead)
+        return !a.trial.dead;
+    if (a.inputs.size() != b.inputs.size())
+        return a.inputs.size() < b.inputs.size();
+    if (a.trial.x != b.trial.x)
+        return a.trial.x > b.trial.x;
+    return a.trial.frame > b.trial.frame;
 }
 
-static int coarseTimingStep(VehicleType type) {
-    return continuousMode(type) ? 18 : 24;
+static int maxToggleBudget(VehicleType type) {
+    switch (type) {
+        case VehicleType::Cube:   return 8;
+        case VehicleType::Ship:   return 18;
+        case VehicleType::Ball:   return 8;
+        case VehicleType::Ufo:    return 10;
+        case VehicleType::Wave:   return 22;
+        case VehicleType::Robot:  return 10;
+        case VehicleType::Spider: return 8;
+        case VehicleType::Swing:  return 18;
+    }
+    return 10;
 }
 
 static std::vector<int> usefulHoldDurations(VehicleType type) {
     switch (type) {
-        case VehicleType::Cube:   return {2, 4, 6, 10, 16, 24, 36};
-        case VehicleType::Ship:   return {6, 12, 18, 24, 36, 48, 72, 96, 144, 220, 320};
-        case VehicleType::Ball:   return {2, 4, 6, 10, 16};
-        case VehicleType::Ufo:    return {2, 4, 6, 10, 16, 24, 36};
-        case VehicleType::Wave:   return {4, 8, 12, 16, 24, 32, 48, 64, 96, 144, 220};
-        case VehicleType::Robot:  return {4, 8, 14, 20, 32, 48, 70, 96, 120};
-        case VehicleType::Spider: return {2, 4, 6, 10, 16};
-        case VehicleType::Swing:  return {4, 8, 12, 16, 24, 32, 48, 64, 96, 144};
+        // Tap modes deliberately use short holds. Long cube/UFO holds can create
+        // accidental repeated jumps after landing, which was one source of the
+        // newer solver looking more spammy than the locked build.
+        case VehicleType::Cube:   return {1, 2, 4, 6};
+        case VehicleType::Ball:   return {1, 2, 4};
+        case VehicleType::Ufo:    return {1, 2, 4, 6};
+        case VehicleType::Spider: return {1, 2, 4};
+        case VehicleType::Robot:  return {4, 8, 14, 24, 40, 64, 96};
+        case VehicleType::Ship:   return {6, 12, 24, 40, 64, 96, 144, 220};
+        case VehicleType::Wave:   return {4, 8, 16, 28, 44, 64, 96, 144};
+        case VehicleType::Swing:  return {4, 8, 16, 28, 44, 64, 96, 144};
     }
-    return {4, 8, 12, 24};
+    return {2, 4, 8};
+}
+
+static int denseTimingStep(VehicleType type, int strength) {
+    if (continuousMode(type))
+        return strength >= 2 ? 4 : 6;
+    return strength >= 2 ? 6 : 8;
+}
+
+static int coarseTimingStep(VehicleType type, int strength) {
+    if (continuousMode(type))
+        return strength >= 2 ? 16 : 22;
+    return strength >= 2 ? 22 : 30;
 }
 
 static void addToggle(InputSet& inputs, int startFrame, int horizon, int offset, bool player2) {
@@ -179,28 +183,39 @@ static TrialResult tryInputs(Level2& lvl, InputSet const& inputs, int horizonFra
     return result;
 }
 
+static SearchInput nthInput(InputSet const& inputs, size_t index) {
+    auto it = inputs.begin();
+    std::advance(it, static_cast<long>(index));
+    return *it;
+}
+
 static std::vector<InputSet> makeStructuredSeeds(
     Level2& lvl,
     int startFrame,
     int horizonFrames,
-    bool player2
+    bool player2,
+    int strength
 ) {
     std::vector<InputSet> seeds;
     auto const type = player2 ? lvl.latestState2().vehicle.type : lvl.latestState().vehicle.type;
     auto const durations = usefulHoldDurations(type);
 
-    // Always test doing absolutely nothing. Safe stretches and fake/decorative
-    // orbs should naturally prefer no input over unnecessary clicks.
     seeds.emplace_back();
 
-    int denseWindow = std::min(horizonFrames, 1080);
-    int coarseWindow = std::min(horizonFrames, 2600);
-    int denseStep = denseTimingStep(type);
-    int coarseStep = coarseTimingStep(type);
+    // If a tap-mode player is currently held, explicitly test releasing now.
+    // This prevents a previous jump hold from silently turning into auto-jump spam.
+    bool currentlyHeld = player2 ? lvl.press2 : lvl.press1;
+    if (currentlyHeld && !continuousMode(type)) {
+        InputSet release;
+        addToggle(release, startFrame, horizonFrames, 0, player2);
+        seeds.push_back(std::move(release));
+    }
 
-    // Fine timing sweep close to the player. This is intentionally expensive:
-    // at 240 TPS, 4-8 frame spacing gives much more useful precision than the
-    // old 12-frame grid on tight jumps and flying corridors.
+    int denseWindow = std::min(horizonFrames, strength >= 2 ? 1080 : 780);
+    int coarseWindow = std::min(horizonFrames, strength >= 2 ? 2100 : 1500);
+    int denseStep = denseTimingStep(type, strength);
+    int coarseStep = coarseTimingStep(type, strength);
+
     for (int offset = 0; offset < denseWindow; offset += denseStep) {
         for (int duration : durations) {
             InputSet input;
@@ -209,8 +224,6 @@ static std::vector<InputSet> makeStructuredSeeds(
         }
     }
 
-    // Farther future uses a coarser sweep so Pathfinder can discover setups well
-    // before an obstacle without exploding the candidate count completely.
     for (int offset = denseWindow; offset < coarseWindow; offset += coarseStep) {
         for (size_t i = 0; i < durations.size(); i += 2) {
             InputSet input;
@@ -219,14 +232,14 @@ static std::vector<InputSet> makeStructuredSeeds(
         }
     }
 
-    // Cube/UFO/Robot often need two deliberate inputs to clear chained hazards.
-    // Seed a small set of two-pulse routes so evolution does not have to invent
-    // every double-jump setup from scratch.
+    // A modest two-pulse bank catches chained cube/UFO/robot hazards without
+    // exploding into the giant deterministic grid from the previous build.
     if (!continuousMode(type)) {
-        int pairWindow = std::min(horizonFrames, 720);
-        int duration = durations[std::min<size_t>(durations.size() - 1, durations.size() / 2)];
-        for (int offset = 0; offset < pairWindow; offset += 30) {
-            for (int gap : {72, 120, 180, 240}) {
+        int pairWindow = std::min(horizonFrames, strength >= 2 ? 720 : 480);
+        int duration = durations[durations.size() / 2];
+        int offsetStep = strength >= 2 ? 24 : 36;
+        for (int offset = 0; offset < pairWindow; offset += offsetStep) {
+            for (int gap : {72, 120, 180}) {
                 InputSet input;
                 addPulse(input, startFrame, horizonFrames, offset, duration, player2);
                 addPulse(input, startFrame, horizonFrames, offset + gap, duration, player2);
@@ -235,12 +248,15 @@ static std::vector<InputSet> makeStructuredSeeds(
         }
     }
 
-    // Flying modes benefit from rhythmic hold/release patterns. These seeds are
-    // especially useful for straight-fly and long wave corridors, where a good
-    // repeated cadence can beat a pile of unrelated random toggles.
+    // Keep the straight-fly/wave strength that tested well, but with a smaller
+    // pattern bank on normal sections. Hard sections unlock the denser cadences.
     if (continuousMode(type)) {
-        int patternWindow = std::min(horizonFrames, 1440);
-        for (int period : {24, 32, 40, 48, 64, 80, 96}) {
+        int patternWindow = std::min(horizonFrames, strength >= 2 ? 1500 : 1080);
+        std::vector<int> periods = strength >= 2
+            ? std::vector<int>{24, 32, 40, 48, 64, 80, 96}
+            : std::vector<int>{32, 48, 64, 80, 96};
+
+        for (int period : periods) {
             for (int dutyNumerator : {1, 2, 3}) {
                 int hold = std::max(2, period * dutyNumerator / 4);
                 InputSet pattern;
@@ -254,25 +270,20 @@ static std::vector<InputSet> makeStructuredSeeds(
     return seeds;
 }
 
-static SearchInput nthInput(InputSet const& inputs, size_t index) {
-    auto it = inputs.begin();
-    std::advance(it, static_cast<long>(index));
-    return *it;
-}
-
 static InputSet mutateCandidate(
     InputSet base,
     Level2& lvl,
     int startFrame,
     int horizonFrames,
-    std::mt19937& rng
+    std::mt19937& rng,
+    int strength
 ) {
     std::uniform_int_distribution<int> mutationDist(0, 4);
     std::uniform_int_distribution<int> offsetDist(0, std::max(0, horizonFrames - 1));
-    std::uniform_int_distribution<int> shiftDist(-64, 64);
+    std::uniform_int_distribution<int> shiftDist(strength >= 2 ? -48 : -32, strength >= 2 ? 48 : 32);
     bool dual = lvl.latestState().dualActive;
 
-    int mutations = 1 + static_cast<int>(rng() % 4);
+    int mutations = 1 + static_cast<int>(rng() % static_cast<unsigned>(strength >= 2 ? 3 : 2));
     for (int m = 0; m < mutations; ++m) {
         int kind = mutationDist(rng);
 
@@ -285,8 +296,7 @@ static InputSet mutateCandidate(
             addPulse(base, startFrame, horizonFrames, offset, duration, player2);
         } else if (kind == 1 && !base.empty()) {
             size_t index = static_cast<size_t>(rng() % base.size());
-            auto value = nthInput(base, index);
-            base.erase(value);
+            base.erase(nthInput(base, index));
         } else if (kind == 2 && !base.empty()) {
             size_t index = static_cast<size_t>(rng() % base.size());
             auto value = nthInput(base, index);
@@ -319,38 +329,66 @@ static CandidateResult searchBestInputs(
     int refinementStrength
 ) {
     int frame = lvl.currentFrame();
+    float startX = lvl.latestState().pos.x;
     bool dual = lvl.latestState().dualActive;
+    auto p1Type = lvl.latestState().vehicle.type;
 
-    std::vector<InputSet> seeds = makeStructuredSeeds(lvl, frame, horizonFrames, false);
+    // Stage 1: cheap confidence probe. Most easy sections do not need thousands
+    // of candidate simulations. If doing nothing safely survives a useful chunk,
+    // return immediately and re-plan later from farther ahead.
+    int probeHorizon = std::min(horizonFrames, 720 + refinementStrength * 90);
+    InputSet noInput;
+    CandidateResult quick {noInput, tryInputs(lvl, noInput, probeHorizon)};
+
+    if (quick.trial.complete)
+        return quick;
+
+    // For tap modes, prefer releasing a carried hold if it is just as safe.
+    if (lvl.press1 && !continuousMode(p1Type)) {
+        InputSet release;
+        addToggle(release, frame, probeHorizon, 0, false);
+        CandidateResult released {release, tryInputs(lvl, release, probeHorizon)};
+        if (!released.trial.dead && released.trial.x + 6.f >= quick.trial.x)
+            quick = std::move(released);
+    }
+
+    if (!quick.trial.dead && quick.trial.frame >= frame + probeHorizon)
+        return quick;
+
+    // Stage 2: structured search only when the simple probe actually fails.
+    std::vector<InputSet> seeds = makeStructuredSeeds(
+        lvl, frame, horizonFrames, false, refinementStrength
+    );
     if (dual) {
-        auto p2Seeds = makeStructuredSeeds(lvl, frame, horizonFrames, true);
-        size_t keep = std::min<size_t>(p2Seeds.size(), 180);
+        auto p2Seeds = makeStructuredSeeds(
+            lvl, frame, horizonFrames, true, refinementStrength
+        );
+        size_t keep = std::min<size_t>(p2Seeds.size(), 80 + refinementStrength * 25);
         for (size_t i = 1; i < keep; ++i)
             seeds.push_back(std::move(p2Seeds[i]));
     }
 
-    // Broader random exploration remains useful for unusual sequences, but it
-    // now comes after a much denser deterministic timing sweep.
-    int randomCandidates = 320 + refinementStrength * 140;
+    int randomCandidates = 120 + refinementStrength * 70;
     std::uniform_int_distribution<int> frameDist(0, std::max(0, horizonFrames - 1));
     int maxP1 = maxToggleBudget(lvl.latestState().vehicle.type);
-    int maxP2 = dual ? maxToggleBudget(lvl.latestState2().vehicle.type) : 2;
+    int maxP2 = dual ? maxToggleBudget(lvl.latestState2().vehicle.type) : 0;
 
     for (int i = 0; i < randomCandidates; ++i) {
         InputSet inputs;
         int p1Count = static_cast<int>(rng() % static_cast<unsigned>(maxP1 + 1));
-        int p2Count = dual ? static_cast<int>(rng() % static_cast<unsigned>(maxP2 + 1)) : 0;
+        int p2Count = dual
+            ? static_cast<int>(rng() % static_cast<unsigned>(maxP2 + 1))
+            : 0;
 
         for (int j = 0; j < p1Count; ++j)
             addToggle(inputs, frame, horizonFrames, frameDist(rng), false);
         for (int j = 0; j < p2Count; ++j)
             addToggle(inputs, frame, horizonFrames, frameDist(rng), true);
-
         seeds.push_back(std::move(inputs));
     }
 
     std::vector<CandidateResult> elites;
-    constexpr size_t eliteCount = 28;
+    size_t eliteCount = static_cast<size_t>(14 + refinementStrength * 3);
 
     auto consider = [&](InputSet inputs) {
         if (stop)
@@ -366,6 +404,10 @@ static CandidateResult searchBestInputs(
             elites.resize(eliteCount);
     };
 
+    // Keep the best cheap probe in the population so heavier search must truly
+    // beat it rather than forgetting a simple route that was already decent.
+    elites.push_back(quick);
+
     for (auto& seed : seeds) {
         if (stop)
             break;
@@ -374,22 +416,21 @@ static CandidateResult searchBestInputs(
             break;
     }
 
-    // More generations and a wider elite pool. The user explicitly prefers
-    // waiting longer for a better route, so keep refining instead of accepting
-    // the first merely-viable candidate.
-    int rounds = 5 + refinementStrength * 2;
-    int childrenPerRound = 260 + refinementStrength * 120;
+    int rounds = 3 + refinementStrength;
+    int childrenPerRound = 130 + refinementStrength * 75;
     for (int round = 0; round < rounds && !stop && !elites.empty(); ++round) {
         auto parents = elites;
+        size_t parentPool = std::min<size_t>(parents.size(), 10 + refinementStrength * 2);
+
         for (int child = 0; child < childrenPerRound && !stop; ++child) {
-            size_t parentPool = std::min<size_t>(parents.size(), 16);
             size_t parentIndex = static_cast<size_t>(rng() % parentPool);
             auto mutated = mutateCandidate(
                 parents[parentIndex].inputs,
                 lvl,
                 frame,
                 horizonFrames,
-                rng
+                rng,
+                refinementStrength
             );
             consider(std::move(mutated));
         }
@@ -398,36 +439,48 @@ static CandidateResult searchBestInputs(
             break;
     }
 
-    // Precision polish. Once the broad/evolutionary search has found strong
-    // routes, nudge each input around progressively smaller windows until we are
-    // testing one-frame differences. This is expensive but directly improves
-    // tight jump and straight-fly timing instead of just adding more randomness.
-    for (int shift : {24, 12, 6, 3, 1}) {
-        if (stop || elites.empty())
-            break;
+    // Precision work is now conditional instead of running on every chunk.
+    // Continuous modes get a small timing polish because it helps straight-fly;
+    // difficult/stalled sections get the full one-frame refinement.
+    if (!elites.empty()) {
+        bool needsPrecision = refinementStrength >= 2 || continuousMode(p1Type);
+        float gain = elites.front().trial.x - startX;
+        if (gain < 350.f)
+            needsPrecision = true;
 
-        auto parents = elites;
-        size_t parentCount = std::min<size_t>(parents.size(), 6);
-        for (size_t p = 0; p < parentCount && !stop; ++p) {
-            size_t inputCount = std::min<size_t>(parents[p].inputs.size(), 16);
-            for (size_t i = 0; i < inputCount && !stop; ++i) {
-                auto original = nthInput(parents[p].inputs, i);
-                bool player2 = inputPlayer2(original);
-                int oldOffset = static_cast<int>(inputFrame(original)) - frame;
+        if (needsPrecision) {
+            std::vector<int> shifts = refinementStrength >= 2
+                ? std::vector<int>{12, 6, 3, 1}
+                : std::vector<int>{4, 1};
 
-                for (int direction : {-1, 1}) {
-                    int newOffset = std::clamp(
-                        oldOffset + direction * shift,
-                        0,
-                        horizonFrames - 1
-                    );
-                    if (newOffset == oldOffset)
-                        continue;
+            for (int shift : shifts) {
+                if (stop || elites.empty())
+                    break;
 
-                    auto polished = parents[p].inputs;
-                    polished.erase(original);
-                    addToggle(polished, frame, horizonFrames, newOffset, player2);
-                    consider(std::move(polished));
+                auto parents = elites;
+                size_t parentCount = std::min<size_t>(parents.size(), refinementStrength >= 2 ? 4 : 2);
+                for (size_t p = 0; p < parentCount && !stop; ++p) {
+                    size_t inputCount = std::min<size_t>(parents[p].inputs.size(), 12);
+                    for (size_t i = 0; i < inputCount && !stop; ++i) {
+                        auto original = nthInput(parents[p].inputs, i);
+                        bool player2 = inputPlayer2(original);
+                        int oldOffset = static_cast<int>(inputFrame(original)) - frame;
+
+                        for (int direction : {-1, 1}) {
+                            int newOffset = std::clamp(
+                                oldOffset + direction * shift,
+                                0,
+                                horizonFrames - 1
+                            );
+                            if (newOffset == oldOffset)
+                                continue;
+
+                            auto polished = parents[p].inputs;
+                            polished.erase(original);
+                            addToggle(polished, frame, horizonFrames, newOffset, player2);
+                            consider(std::move(polished));
+                        }
+                    }
                 }
             }
         }
@@ -435,7 +488,7 @@ static CandidateResult searchBestInputs(
 
     if (elites.empty()) {
         CandidateResult empty;
-        empty.trial = {frame, lvl.latestState().pos.x, lvl.latestState().dead, false};
+        empty.trial = {frame, startX, lvl.latestState().dead, false};
         return empty;
     }
 
@@ -464,11 +517,10 @@ PathfinderResult pathfind(
     while (lvl.latestState().pos.x < lvl.length && !stop) {
         auto frame = lvl.currentFrame();
 
-        // High-accuracy mode by default: start around 9 seconds of look-ahead
-        // and ramp toward ~16 seconds when a section keeps resisting progress.
-        // This intentionally trades solve time for route quality.
-        int difficulty = std::min(5, recoveryCount + stagnantRounds / 4);
-        int horizonFrames = 2200 + difficulty * 320;
+        // Balanced mode: about 6.25 seconds normally, scaling toward ~10.8
+        // seconds only when the solver proves the section is difficult.
+        int difficulty = std::min(5, recoveryCount + stagnantRounds / 5);
+        int horizonFrames = 1500 + difficulty * 220;
         auto best = searchBestInputs(lvl, stop, rng, horizonFrames, difficulty);
 
         if (stop)
@@ -486,8 +538,8 @@ PathfinderResult pathfind(
                 numAway += 1000;
                 fail = 1;
 
-                if (numAway > 15000) {
-                    numAway = 1800;
+                if (numAway > 12000) {
+                    numAway = 1500;
                     trueBest = 0;
                     lvl.rollback(1);
                     lvl.syncPresses();
@@ -496,12 +548,25 @@ PathfinderResult pathfind(
                 fail += 50;
             }
         } else {
-            // Trust only the first 40% of an unfinished forecast. Re-planning
-            // more often costs time but reduces the chance of committing to a
-            // route whose later timing was only accidentally viable.
+            int span = std::max(1, bestFrame - frame);
+            int commitNumerator;
+            int commitDenominator = 100;
+
+            if (bestComplete) {
+                commitNumerator = 100;
+            } else if (best.inputs.empty() && !best.trial.dead) {
+                // Safe/no-input stretches are cheap and reliable, so move ahead
+                // more aggressively before re-planning.
+                commitNumerator = 65;
+            } else if (difficulty <= 1) {
+                commitNumerator = 55;
+            } else {
+                commitNumerator = 45;
+            }
+
             int applyUntil = bestComplete
                 ? bestFrame
-                : frame + std::max(1, (bestFrame - frame) * 2 / 5);
+                : frame + std::max(1, span * commitNumerator / commitDenominator);
 
             for (int i = frame; i < applyUntil && !lvl.latestState().dead; ++i) {
                 auto p1 = inputKey(static_cast<uint32_t>(i), false);
@@ -532,13 +597,13 @@ PathfinderResult pathfind(
             ++stagnantRounds;
         }
 
-        // Be more patient before declaring a route stuck, then back up farther
-        // and re-run the now-heavier search from a meaningfully different setup.
-        if (stagnantRounds >= 10 && lvlBest.currentFrame() > 2) {
+        // Keep the useful stall recovery, but escalate search depth instead of
+        // making every easy section pay the hard-section cost up front.
+        if (stagnantRounds >= 9 && lvlBest.currentFrame() > 2) {
             lvl = lvlBest;
             int retreat = std::min(
                 lvlBest.currentFrame() - 1,
-                900 * (1 + std::min(recoveryCount, 12))
+                720 * (1 + std::min(recoveryCount, 10))
             );
             lvl.rollback(std::max(1, lvlBest.currentFrame() - retreat));
             lvl.syncPresses();
@@ -546,7 +611,7 @@ PathfinderResult pathfind(
             ++recoveryCount;
             stagnantRounds = 0;
             fail = 1;
-            numAway = std::min(12000, 1800 + recoveryCount * 900);
+            numAway = std::min(9000, 1500 + recoveryCount * 700);
             rng.seed(rd() ^ static_cast<unsigned int>(lvl.currentFrame() + recoveryCount * 7919));
         }
 
