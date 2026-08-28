@@ -2,7 +2,42 @@
 #include <iomanip>
 #include <cfloat>
 #include <cmath>
+#include <unordered_set>
 #include <Level.hpp>
+
+namespace {
+void registerGroupTargets(std::unordered_map<int, std::string> const& obj,
+                          std::unordered_map<int, std::vector<Entity>>& targets) {
+	if (!obj.contains(2) || !obj.contains(3))
+		return;
+
+	Entity marker{
+		{stod_def(obj.at(2)), stod_def(obj.at(3))},
+		{0, 0},
+		- stod_def(obj.contains(6) ? obj.at(6) : std::string{})
+	};
+
+	std::unordered_set<int> groups;
+	auto addGroup = [&groups](std::string const& value) {
+		if (value.empty()) return;
+		int id = atoi(value.c_str());
+		if (id > 0) groups.insert(id);
+	};
+
+	if (auto it = obj.find(33); it != obj.end())
+		addGroup(it->second);
+
+	if (auto it = obj.find(57); it != obj.end()) {
+		std::stringstream groupStream(it->second);
+		std::string group;
+		while (std::getline(groupStream, group, '.'))
+			addGroup(group);
+	}
+
+	for (int group : groups)
+		targets[group].push_back(marker);
+}
+}
 
 void Level::initLevelSettings(std::string const& lvlSettings, Player& player) {
 	std::unordered_map<std::string, std::string> obj;
@@ -23,7 +58,7 @@ void Level::initLevelSettings(std::string const& lvlSettings, Player& player) {
 
 	player.speed = atoi(get_or("kA4", "0"));
 
-	// Robtop stores 1x speed as 0 and slow speed as 1. Very silly
+	// RobTop stores 1x speed as 0 and slow speed as 1.
 	if (player.speed == 0)
 		player.speed = 1;
 	else if (player.speed == 1)
@@ -43,16 +78,13 @@ void Level::initLevelSettings(std::string const& lvlSettings, Player& player) {
 }
 
 Level::Level(std::string const& lvlString) {
-	// Split by ';' to parse level string
 	std::stringstream ss(lvlString);
 	std::string objstr;
 	bool first = true;
 
-	// First player state
 	auto player = Player();
 
 	while (std::getline(ss, objstr, ';')) {
-		// First entry is level settings object
 		if (first) {
 			initLevelSettings(objstr, player);
 			first = false;
@@ -69,6 +101,13 @@ Level::Level(std::string const& lvlString) {
 				obj[atoi(k.c_str())] = v;
 		}
 
+		if (!obj.contains(1))
+			continue;
+
+		// Group targets must be indexed before Object::create moves the parsed map,
+		// and must include decorative/invisible helper objects that the physics parser ignores.
+		registerGroupTargets(obj, groupTargets);
+
 		if (obj[1] == "31") {
 			initLevelSettings(objstr, player);
 			player.pos.x = stod_def(obj[2], 0);
@@ -78,11 +117,9 @@ Level::Level(std::string const& lvlString) {
 		if (auto ob_o = Object::create(std::move(obj))) {
 			auto ob = ob_o.value();
 
-			// Unique ID
 			ob->id = objectCount++;
 
-			// Sections are divided by x position in increments of 100
-			size_t sectionPos = std::max(.0f, ob->pos.x / sectionSize);
+			size_t sectionPos = static_cast<size_t>(std::max(.0f, ob->pos.x / sectionSize));
 			if (sectionPos >= sections.size())
 				sections.resize(sectionPos + 1);
 			sections[sectionPos].push_back(ob);
@@ -103,7 +140,6 @@ Level::Level(std::string const& lvlString) {
 }
 
 void Level::simulatePlayer(Player& p, bool pressed, float dt) {
-	// Can't play if you're dead
 	if (p.dead)
 		return;
 
@@ -115,20 +151,17 @@ void Level::simulatePlayer(Player& p, bool pressed, float dt) {
 		return;
 	}
 
-	// Objects from previous, current, and next section are all collision tested
 	size_t sectionIdx = std::min(std::max(0, (int)(p.pos.x / sectionSize)), (int)sections.size() - 1);
 	auto prevSection = &sections[sectionIdx == 0 ? 0 : sectionIdx - 1];
 	auto currSection = &sections[sectionIdx];
 	auto nextSection = &sections[sectionIdx + 1 >= sections.size() ? sections.size() - 1 : sectionIdx + 1];
 
-	// If at start or end of level, previous/next section is invalid so don't use it twice
 	std::vector<ObjectContainer>* nearby[3] = { prevSection, nullptr, nullptr };
 	if (currSection != prevSection)
 		nearby[1] = currSection;
 	if (nextSection != currSection && nextSection != prevSection)
 		nearby[2] = nextSection;
 
-	// Blocks and hazards are processed separately to preserve GD collision priority.
 	std::vector<ObjectContainer> blocks;
 	std::vector<ObjectContainer> hazards;
 	blocks.reserve(100);
@@ -151,7 +184,6 @@ void Level::simulatePlayer(Player& p, bool pressed, float dt) {
 		}
 	}
 
-	// Blocks are processed in descending order
 	for (int i = static_cast<int>(blocks.size()) - 1; i >= 0; --i) {
 		if (p.dead) break;
 		auto& b = blocks[i];
@@ -176,7 +208,7 @@ void Level::simulatePlayer(Player& p, bool pressed, float dt) {
 		std::cout << "P" << (p.player2 ? 2 : 1) << " Frame " << currentFrame() << std::fixed << std::setprecision(8)
 				  << " X " << p.pos.x << " Y " << p.pos.y - 15 << " Vel " << p.velocity
 				  << " Accel " << p.acceleration << " Rot " << p.rotation << " Coll " << numCollisions
- 				  << std::endl;
+				  << std::endl;
 	}
 }
 
@@ -193,8 +225,6 @@ Player& Level::runFrame(bool player1Pressed, bool player2Pressed, float dt) {
 
 	if (p1.dualActive) {
 		if (!wasDual) {
-			// GD creates the second icon as a mirrored partner. Keep both timelines aligned
-			// so rollback remains O(1) and deterministic.
 			p2 = p1;
 			p2.player2 = true;
 			p2.dualActive = true;
@@ -207,18 +237,15 @@ Player& Level::runFrame(bool player1Pressed, bool player2Pressed, float dt) {
 			p2.dualActive = true;
 			simulatePlayer(p2, player2Pressed, dt);
 
-			// Either player can hit the solo portal.
 			if (!p2.dualActive)
 				p1.dualActive = false;
 		}
 
-		// In Geometry Dash, one player dying kills the whole dual.
 		if (p1.dead || p2.dead) {
 			p1.dead = true;
 			p2.dead = true;
 		}
 	} else {
-		// Keep a shadow timeline while solo so frame indices never drift.
 		p2 = p1;
 		p2.player2 = true;
 		p2.dualActive = false;
@@ -238,9 +265,6 @@ float Level::findOppositeSurface(Player const& player, bool towardsCeiling) cons
 			if (o->prio != 1)
 				continue;
 
-			// Spider collision uses solid block surfaces. Slopes are intentionally
-			// approximated by their bounding surface here; their normal collision
-			// pass corrects the landing on the following frame.
 			if (player.pos.x + halfWidth < o->getLeft() || player.pos.x - halfWidth > o->getRight())
 				continue;
 
@@ -259,6 +283,17 @@ float Level::findOppositeSurface(Player const& player, bool towardsCeiling) cons
 	if (towardsCeiling)
 		return best == FLT_MAX ? player.ceiling : best;
 	return best == -FLT_MAX ? player.floor : best;
+}
+
+std::optional<Entity> Level::getGroupTarget(int groupID, size_t index) const {
+	if (groupID <= 0)
+		return {};
+
+	auto it = groupTargets.find(groupID);
+	if (it == groupTargets.end() || it->second.empty())
+		return {};
+
+	return it->second[index % it->second.size()];
 }
 
 void Level::rollback(int frame) {
