@@ -130,6 +130,7 @@ std::optional<ObjectContainer> Object::create(std::unordered_map<int, std::strin
 
 	// Physics-affecting non-visual triggers. Visual-only/camera/shader triggers are ignored.
 	objs(({ 1917, 1931, 1935, 2066, 2900, 3600 }), GameplayTrigger, 2, 2)
+	objs(({ 1932 }), PlayerControlTrigger, 2, 2)
 	objs(({ 3022 }), TeleportTrigger, 2, 2)
 
 	objs(({ 143 }), BreakableBlock, 30, 30)
