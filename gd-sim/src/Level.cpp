@@ -104,6 +104,23 @@ Level::Level(std::string const& lvlString) {
 		if (!obj.contains(1))
 			continue;
 
+		// Every authored object contributes to the level's real extent, even when
+		// Pathfinder does not have a simulator class for that object yet. Previously
+		// unsupported 2.2/decorative objects vanished before length was updated, which
+		// made modern levels appear to end at 70-90% and poisoned the progress counter.
+		if (auto xIt = obj.find(2); xIt != obj.end() && !xIt->second.empty()) {
+			float authoredX = stod_def(xIt->second, 0.f);
+			if (std::isfinite(authoredX) && authoredX >= 0.f) {
+				length = std::max(length, authoredX + 100.f);
+
+				// Preserve empty spatial sections too. This makes unknown objects part of
+				// the authored section map without pretending they have collision physics.
+				size_t authoredSection = static_cast<size_t>(std::max(0.f, authoredX / sectionSize));
+				if (authoredSection >= sections.size())
+					sections.resize(authoredSection + 1);
+			}
+		}
+
 		// Group targets must be indexed before Object::create moves the parsed map,
 		// and must include decorative/invisible helper objects that the physics parser ignores.
 		registerGroupTargets(obj, groupTargets);
@@ -123,9 +140,6 @@ Level::Level(std::string const& lvlString) {
 			if (sectionPos >= sections.size())
 				sections.resize(sectionPos + 1);
 			sections[sectionPos].push_back(ob);
-
-			if (ob->pos.x > length)
-				length = ob->pos.x + 100;
 		}
 	}
 
