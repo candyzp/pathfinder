@@ -4,6 +4,8 @@
 #include <cstring>
 #include <optional>
 #include <cstddef>
+#include <concepts>
+#include <type_traits>
 
 struct ObjectContainer;
 struct Player;
@@ -40,13 +42,17 @@ struct ObjectContainer {
     static constexpr size_t extraStorage = 0x80;
     alignas(std::max_align_t) std::byte buffer[sizeof(Object) + extraStorage]{};
 
-    ObjectContainer(ObjectContainer& cont) { std::memcpy(buffer, cont.buffer, sizeof(buffer)); }
-    ObjectContainer(ObjectContainer const& cont) { std::memcpy(buffer, cont.buffer, sizeof(buffer)); }
+    ObjectContainer(ObjectContainer const&) = default;
+    ObjectContainer(ObjectContainer&&) noexcept = default;
+    ObjectContainer& operator=(ObjectContainer const&) = default;
+    ObjectContainer& operator=(ObjectContainer&&) noexcept = default;
 
     template <class T>
+        requires std::derived_from<std::remove_cvref_t<T>, Object>
     ObjectContainer(T&& obj) {
-        static_assert(sizeof(T) <= sizeof(buffer), "Object subclass exceeds ObjectContainer storage");
-        std::memcpy(buffer, static_cast<void const*>(&obj), sizeof(T));
+        using Stored = std::remove_cvref_t<T>;
+        static_assert(sizeof(Stored) <= sizeof(buffer), "Object subclass exceeds ObjectContainer storage");
+        std::memcpy(buffer, static_cast<void const*>(&obj), sizeof(Stored));
     }
 
     Object const* operator->() const {
