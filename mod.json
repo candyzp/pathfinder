@@ -1,5 +1,5 @@
 {
-	"id": "camila314.pathfinder",
+	"id": "candyzp.pathfinder",
 	"gd": {
 		"win": "2.2081",
 		"android": "2.2081",
@@ -8,8 +8,8 @@
 	},
 	"geode": "5.9.0",
 	"name": "Pathfinder",
-	"developer": "camila314",
-	"version": "v1.0.0-beta.243",
+	"developer": "candyzp",
+	"version": "v1.0.0-beta.244",
 	"dependencies": {
 		"geode.node-ids": {
 			"id": "geode.node-ids",
@@ -26,6 +26,6 @@
 	"tags": ["offline", "gameplay", "utility"],
 	"links": {
 	    "community": "https://discord.com/invite/u9m7kqyqxu",
-	    "source": "https://github.com/camila314/pathfinder"
+	    "source": "https://github.com/candyzp/pathfinder"
 	}
 }
