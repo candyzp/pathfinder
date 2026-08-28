@@ -53,6 +53,7 @@ struct TrialResult {
     float x = 0.f;
     bool dead = false;
     bool complete = false;
+    bool survivedHorizon = false;
 };
 
 struct CandidateResult {
@@ -70,17 +71,30 @@ static bool betterCandidate(CandidateResult const& a, CandidateResult const& b) 
     if (a.trial.complete != b.trial.complete)
         return a.trial.complete;
 
-    // Tiny X differences are usually noise. If two paths are effectively tied,
-    // prefer the one that stays alive and uses fewer toggles instead of buying
-    // a couple pixels of progress with messy inputs.
-    constexpr float progressTie = 6.f;
+    // A route that survives the full forecast is categorically better than one
+    // that merely gets a few pixels farther before dying. This prevents the
+    // solver from repeatedly steering itself into the same spike wall.
+    if (a.trial.survivedHorizon != b.trial.survivedHorizon)
+        return a.trial.survivedHorizon;
+
+    if (a.trial.dead != b.trial.dead)
+        return !a.trial.dead;
+
+    if (a.trial.survivedHorizon && b.trial.survivedHorizon) {
+        if (a.inputs.size() != b.inputs.size())
+            return a.inputs.size() < b.inputs.size();
+        if (a.trial.x != b.trial.x)
+            return a.trial.x > b.trial.x;
+        return a.trial.frame > b.trial.frame;
+    }
+
+    // Among routes that all die, farther progress still provides useful search
+    // information, but tiny differences are not worth extra noisy inputs.
+    constexpr float progressTie = 12.f;
     if (a.trial.x > b.trial.x + progressTie)
         return true;
     if (b.trial.x > a.trial.x + progressTie)
         return false;
-
-    if (a.trial.dead != b.trial.dead)
-        return !a.trial.dead;
     if (a.inputs.size() != b.inputs.size())
         return a.inputs.size() < b.inputs.size();
     if (a.trial.x != b.trial.x)
@@ -104,9 +118,6 @@ static int maxToggleBudget(VehicleType type) {
 
 static std::vector<int> usefulHoldDurations(VehicleType type) {
     switch (type) {
-        // Tap modes deliberately use short holds. Long cube/UFO holds can create
-        // accidental repeated jumps after landing, which was one source of the
-        // newer solver looking more spammy than the locked build.
         case VehicleType::Cube:   return {1, 2, 4, 6};
         case VehicleType::Ball:   return {1, 2, 4};
         case VehicleType::Ufo:    return {1, 2, 4, 6};
@@ -121,14 +132,14 @@ static std::vector<int> usefulHoldDurations(VehicleType type) {
 
 static int denseTimingStep(VehicleType type, int strength) {
     if (continuousMode(type))
-        return strength >= 2 ? 4 : 6;
-    return strength >= 2 ? 6 : 8;
+        return strength >= 2 ? 5 : 7;
+    return strength >= 2 ? 7 : 10;
 }
 
 static int coarseTimingStep(VehicleType type, int strength) {
     if (continuousMode(type))
-        return strength >= 2 ? 16 : 22;
-    return strength >= 2 ? 22 : 30;
+        return strength >= 2 ? 18 : 26;
+    return strength >= 2 ? 26 : 36;
 }
 
 static void addToggle(InputSet& inputs, int startFrame, int horizon, int offset, bool player2) {
@@ -163,11 +174,13 @@ static TrialResult tryInputs(Level2& lvl, InputSet const& inputs, int horizonFra
         lvl.runFrame(lvl.press1, lvl.press2, 1.f / 240.f);
     }
 
+    bool complete = !lvl.latestState().dead && lvl.latestState().pos.x >= lvl.length;
     TrialResult result {
         lvl.currentFrame(),
         lvl.latestState().pos.x,
         lvl.latestState().dead,
-        !lvl.latestState().dead && lvl.latestState().pos.x >= lvl.length
+        complete,
+        !complete && !lvl.latestState().dead && lvl.currentFrame() >= endFrame
     };
 
     float lastY = lvl.latestState().pos.y;
@@ -175,6 +188,7 @@ static TrialResult tryInputs(Level2& lvl, InputSet const& inputs, int horizonFra
         (lastY > std::max(1300.f, lvl.highestY + 600.f) || lastY < -600.f)) {
         result.frame = startFrame;
         result.dead = true;
+        result.survivedHorizon = false;
     }
 
     lvl.rollback(startFrame);
@@ -202,8 +216,6 @@ static std::vector<InputSet> makeStructuredSeeds(
 
     seeds.emplace_back();
 
-    // If a tap-mode player is currently held, explicitly test releasing now.
-    // This prevents a previous jump hold from silently turning into auto-jump spam.
     bool currentlyHeld = player2 ? lvl.press2 : lvl.press1;
     if (currentlyHeld && !continuousMode(type)) {
         InputSet release;
@@ -211,8 +223,11 @@ static std::vector<InputSet> makeStructuredSeeds(
         seeds.push_back(std::move(release));
     }
 
-    int denseWindow = std::min(horizonFrames, strength >= 2 ? 1080 : 780);
-    int coarseWindow = std::min(horizonFrames, strength >= 2 ? 2100 : 1500);
+    // Keep broad coverage, but stop spending enormous time on timings that are
+    // far beyond the next obstacle. A targeted danger bank below handles the
+    // immediate collision with much denser timing.
+    int denseWindow = std::min(horizonFrames, strength >= 2 ? 840 : 600);
+    int coarseWindow = std::min(horizonFrames, strength >= 2 ? 1680 : 1200);
     int denseStep = denseTimingStep(type, strength);
     int coarseStep = coarseTimingStep(type, strength);
 
@@ -232,12 +247,10 @@ static std::vector<InputSet> makeStructuredSeeds(
         }
     }
 
-    // A modest two-pulse bank catches chained cube/UFO/robot hazards without
-    // exploding into the giant deterministic grid from the previous build.
     if (!continuousMode(type)) {
-        int pairWindow = std::min(horizonFrames, strength >= 2 ? 720 : 480);
+        int pairWindow = std::min(horizonFrames, strength >= 2 ? 600 : 420);
         int duration = durations[durations.size() / 2];
-        int offsetStep = strength >= 2 ? 24 : 36;
+        int offsetStep = strength >= 2 ? 30 : 42;
         for (int offset = 0; offset < pairWindow; offset += offsetStep) {
             for (int gap : {72, 120, 180}) {
                 InputSet input;
@@ -248,10 +261,8 @@ static std::vector<InputSet> makeStructuredSeeds(
         }
     }
 
-    // Keep the straight-fly/wave strength that tested well, but with a smaller
-    // pattern bank on normal sections. Hard sections unlock the denser cadences.
     if (continuousMode(type)) {
-        int patternWindow = std::min(horizonFrames, strength >= 2 ? 1500 : 1080);
+        int patternWindow = std::min(horizonFrames, strength >= 2 ? 1320 : 900);
         std::vector<int> periods = strength >= 2
             ? std::vector<int>{24, 32, 40, 48, 64, 80, 96}
             : std::vector<int>{32, 48, 64, 80, 96};
@@ -280,7 +291,7 @@ static InputSet mutateCandidate(
 ) {
     std::uniform_int_distribution<int> mutationDist(0, 4);
     std::uniform_int_distribution<int> offsetDist(0, std::max(0, horizonFrames - 1));
-    std::uniform_int_distribution<int> shiftDist(strength >= 2 ? -48 : -32, strength >= 2 ? 48 : 32);
+    std::uniform_int_distribution<int> shiftDist(strength >= 2 ? -40 : -28, strength >= 2 ? 40 : 28);
     bool dual = lvl.latestState().dualActive;
 
     int mutations = 1 + static_cast<int>(rng() % static_cast<unsigned>(strength >= 2 ? 3 : 2));
@@ -333,42 +344,66 @@ static CandidateResult searchBestInputs(
     bool dual = lvl.latestState().dualActive;
     auto p1Type = lvl.latestState().vehicle.type;
 
-    // Stage 1: cheap confidence probe. Most easy sections do not need thousands
-    // of candidate simulations. If doing nothing safely survives a useful chunk,
-    // return immediately and re-plan later from farther ahead.
-    int probeHorizon = std::min(horizonFrames, 720 + refinementStrength * 90);
+    // Short probe first. If there is no imminent danger, do not make an easy
+    // section pay for a giant evolutionary search.
+    int probeHorizon = std::min(horizonFrames, 480 + refinementStrength * 60);
     InputSet noInput;
     CandidateResult quick {noInput, tryInputs(lvl, noInput, probeHorizon)};
 
     if (quick.trial.complete)
         return quick;
 
-    // For tap modes, prefer releasing a carried hold if it is just as safe.
     if (lvl.press1 && !continuousMode(p1Type)) {
         InputSet release;
         addToggle(release, frame, probeHorizon, 0, false);
         CandidateResult released {release, tryInputs(lvl, release, probeHorizon)};
-        if (!released.trial.dead && released.trial.x + 6.f >= quick.trial.x)
+        if (betterCandidate(released, quick))
             quick = std::move(released);
     }
 
-    if (!quick.trial.dead && quick.trial.frame >= frame + probeHorizon)
+    if (quick.trial.survivedHorizon)
         return quick;
 
-    // Stage 2: structured search only when the simple probe actually fails.
-    std::vector<InputSet> seeds = makeStructuredSeeds(
-        lvl, frame, horizonFrames, false, refinementStrength
+    std::vector<InputSet> seeds;
+
+    // If the simple route dies, its death frame is valuable information. Test
+    // inputs specifically before that danger instead of wasting most of the
+    // search budget on timings far away from the obstacle.
+    if (quick.trial.dead && quick.trial.frame > frame) {
+        int dangerOffset = std::clamp(quick.trial.frame - frame, 1, horizonFrames - 1);
+        auto durations = usefulHoldDurations(p1Type);
+        std::vector<int> leads = continuousMode(p1Type)
+            ? std::vector<int>{12, 20, 28, 36, 48, 64, 80, 104, 136}
+            : std::vector<int>{24, 36, 48, 60, 72, 96, 120, 156, 192};
+
+        for (int lead : leads) {
+            int offset = dangerOffset - lead;
+            if (offset < 0)
+                continue;
+            for (int duration : durations) {
+                InputSet focused;
+                addPulse(focused, frame, horizonFrames, offset, duration, false);
+                seeds.push_back(std::move(focused));
+            }
+        }
+    }
+
+    auto broadSeeds = makeStructuredSeeds(lvl, frame, horizonFrames, false, refinementStrength);
+    size_t broadLimit = std::min<size_t>(
+        broadSeeds.size(),
+        static_cast<size_t>(180 + refinementStrength * 60)
     );
+    for (size_t i = 0; i < broadLimit; ++i)
+        seeds.push_back(std::move(broadSeeds[i]));
+
     if (dual) {
-        auto p2Seeds = makeStructuredSeeds(
-            lvl, frame, horizonFrames, true, refinementStrength
-        );
-        size_t keep = std::min<size_t>(p2Seeds.size(), 80 + refinementStrength * 25);
+        auto p2Seeds = makeStructuredSeeds(lvl, frame, horizonFrames, true, refinementStrength);
+        size_t keep = std::min<size_t>(p2Seeds.size(), 50 + refinementStrength * 15);
         for (size_t i = 1; i < keep; ++i)
             seeds.push_back(std::move(p2Seeds[i]));
     }
 
-    int randomCandidates = 120 + refinementStrength * 70;
+    int randomCandidates = 50 + refinementStrength * 30;
     std::uniform_int_distribution<int> frameDist(0, std::max(0, horizonFrames - 1));
     int maxP1 = maxToggleBudget(lvl.latestState().vehicle.type);
     int maxP2 = dual ? maxToggleBudget(lvl.latestState2().vehicle.type) : 0;
@@ -388,39 +423,50 @@ static CandidateResult searchBestInputs(
     }
 
     std::vector<CandidateResult> elites;
-    size_t eliteCount = static_cast<size_t>(14 + refinementStrength * 3);
+    size_t eliteCount = static_cast<size_t>(10 + refinementStrength * 2);
 
-    auto consider = [&](InputSet inputs) {
+    auto consider = [&](InputSet inputs) -> bool {
         if (stop)
-            return;
+            return false;
 
         CandidateResult candidate;
         candidate.trial = tryInputs(lvl, inputs, horizonFrames);
         candidate.inputs = std::move(inputs);
+        bool survived = candidate.trial.survivedHorizon;
 
         elites.push_back(std::move(candidate));
         std::sort(elites.begin(), elites.end(), betterCandidate);
         if (elites.size() > eliteCount)
             elites.resize(eliteCount);
+        return survived;
     };
 
-    // Keep the best cheap probe in the population so heavier search must truly
-    // beat it rather than forgetting a simple route that was already decent.
     elites.push_back(quick);
+    std::sort(elites.begin(), elites.end(), betterCandidate);
 
+    int survivorHits = 0;
     for (auto& seed : seeds) {
         if (stop)
             break;
-        consider(std::move(seed));
-        if (!elites.empty() && elites.front().trial.complete && elites.front().inputs.size() <= 2)
+        if (consider(std::move(seed)))
+            ++survivorHits;
+
+        if (!elites.empty() && elites.front().trial.complete)
+            break;
+        if (!elites.empty() && elites.front().trial.survivedHorizon &&
+            elites.front().inputs.size() <= 2 && survivorHits >= 2)
             break;
     }
 
-    int rounds = 3 + refinementStrength;
-    int childrenPerRound = 130 + refinementStrength * 75;
+    if (!elites.empty() && elites.front().trial.survivedHorizon &&
+        elites.front().inputs.size() <= 2)
+        return elites.front();
+
+    int rounds = 2 + std::min(refinementStrength, 2);
+    int childrenPerRound = 60 + refinementStrength * 35;
     for (int round = 0; round < rounds && !stop && !elites.empty(); ++round) {
         auto parents = elites;
-        size_t parentPool = std::min<size_t>(parents.size(), 10 + refinementStrength * 2);
+        size_t parentPool = std::min<size_t>(parents.size(), 6 + refinementStrength * 2);
 
         for (int child = 0; child < childrenPerRound && !stop; ++child) {
             size_t parentIndex = static_cast<size_t>(rng() % parentPool);
@@ -433,34 +479,37 @@ static CandidateResult searchBestInputs(
                 refinementStrength
             );
             consider(std::move(mutated));
+
+            if (!elites.empty() && elites.front().trial.survivedHorizon &&
+                elites.front().inputs.size() <= 2)
+                break;
         }
 
-        if (!elites.empty() && elites.front().trial.complete && elites.front().inputs.size() <= 2)
+        if (!elites.empty() && elites.front().trial.complete)
             break;
     }
 
-    // Precision work is now conditional instead of running on every chunk.
-    // Continuous modes get a small timing polish because it helps straight-fly;
-    // difficult/stalled sections get the full one-frame refinement.
-    if (!elites.empty()) {
+    // Precision polishing is useful only when we still have not found a clean
+    // full-horizon survivor. Do not burn one-frame sweeps on already-safe routes.
+    if (!elites.empty() && !elites.front().trial.survivedHorizon) {
         bool needsPrecision = refinementStrength >= 2 || continuousMode(p1Type);
         float gain = elites.front().trial.x - startX;
-        if (gain < 350.f)
+        if (gain < 300.f)
             needsPrecision = true;
 
         if (needsPrecision) {
             std::vector<int> shifts = refinementStrength >= 2
-                ? std::vector<int>{12, 6, 3, 1}
-                : std::vector<int>{4, 1};
+                ? std::vector<int>{8, 4, 2, 1}
+                : std::vector<int>{4, 2};
 
             for (int shift : shifts) {
-                if (stop || elites.empty())
+                if (stop || elites.empty() || elites.front().trial.survivedHorizon)
                     break;
 
                 auto parents = elites;
-                size_t parentCount = std::min<size_t>(parents.size(), refinementStrength >= 2 ? 4 : 2);
+                size_t parentCount = std::min<size_t>(parents.size(), refinementStrength >= 2 ? 3 : 2);
                 for (size_t p = 0; p < parentCount && !stop; ++p) {
-                    size_t inputCount = std::min<size_t>(parents[p].inputs.size(), 12);
+                    size_t inputCount = std::min<size_t>(parents[p].inputs.size(), 10);
                     for (size_t i = 0; i < inputCount && !stop; ++i) {
                         auto original = nthInput(parents[p].inputs, i);
                         bool player2 = inputPlayer2(original);
@@ -488,7 +537,7 @@ static CandidateResult searchBestInputs(
 
     if (elites.empty()) {
         CandidateResult empty;
-        empty.trial = {frame, startX, lvl.latestState().dead, false};
+        empty.trial = {frame, startX, lvl.latestState().dead, false, false};
         return empty;
     }
 
@@ -510,6 +559,8 @@ PathfinderResult pathfind(
     int numAway = 1000;
     int stagnantRounds = 0;
     int recoveryCount = 0;
+    int repeatedDeathZone = 0;
+    float lastDeathX = -100000.f;
     float furthestX = lvl.latestState().pos.x;
 
     Level2 lvlBest = lvl;
@@ -517,10 +568,13 @@ PathfinderResult pathfind(
     while (lvl.latestState().pos.x < lvl.length && !stop) {
         auto frame = lvl.currentFrame();
 
-        // Balanced mode: about 6.25 seconds normally, scaling toward ~10.8
-        // seconds only when the solver proves the section is difficult.
-        int difficulty = std::min(5, recoveryCount + stagnantRounds / 5);
-        int horizonFrames = 1500 + difficulty * 220;
+        // Faster normal forecast, with extra depth reserved for sections that
+        // actually prove difficult or repeatedly kill the same route.
+        int difficulty = std::min(
+            4,
+            recoveryCount + stagnantRounds / 3 + repeatedDeathZone / 2
+        );
+        int horizonFrames = 1200 + difficulty * 150;
         auto best = searchBestInputs(lvl, stop, rng, horizonFrames, difficulty);
 
         if (stop)
@@ -529,23 +583,55 @@ PathfinderResult pathfind(
         int bestFrame = best.trial.frame;
         bool bestComplete = best.trial.complete;
 
+        if (best.trial.dead && !bestComplete) {
+            if (std::abs(best.trial.x - lastDeathX) <= 40.f)
+                ++repeatedDeathZone;
+            else
+                repeatedDeathZone = 1;
+            lastDeathX = best.trial.x;
+        } else {
+            repeatedDeathZone = 0;
+            lastDeathX = -100000.f;
+        }
+
+        // Three searches dying at essentially the same X means we are trapped in
+        // a local solution. Retreat immediately instead of spending nine more
+        // expensive rounds rediscovering the same spike.
+        if (repeatedDeathZone >= 3 && lvlBest.currentFrame() > 2) {
+            lvl = lvlBest;
+            int retreat = std::min(
+                lvlBest.currentFrame() - 1,
+                480 + std::min(recoveryCount, 6) * 240 + repeatedDeathZone * 120
+            );
+            lvl.rollback(std::max(1, lvlBest.currentFrame() - retreat));
+            lvl.syncPresses();
+
+            ++recoveryCount;
+            stagnantRounds = 0;
+            repeatedDeathZone = 0;
+            fail = 1;
+            numAway = std::min(7000, 1200 + recoveryCount * 600);
+            rng.seed(rd() ^ static_cast<unsigned int>(lvl.currentFrame() + recoveryCount * 7919));
+            continue;
+        }
+
         if (bestFrame == frame || best.trial.x <= lvl.latestState().pos.x) {
             lvl.rollback(std::max(std::max(frame - fail, trueBest - numAway), 1));
             lvl.syncPresses();
 
             fail += 5;
             if (fail > numAway + 1000) {
-                numAway += 1000;
+                numAway += 800;
                 fail = 1;
 
-                if (numAway > 12000) {
-                    numAway = 1500;
+                if (numAway > 9000) {
+                    numAway = 1200;
                     trueBest = 0;
                     lvl.rollback(1);
                     lvl.syncPresses();
                 }
             } else if (fail > 100) {
-                fail += 50;
+                fail += 40;
             }
         } else {
             int span = std::max(1, bestFrame - frame);
@@ -554,19 +640,25 @@ PathfinderResult pathfind(
 
             if (bestComplete) {
                 commitNumerator = 100;
-            } else if (best.inputs.empty() && !best.trial.dead) {
-                // Safe/no-input stretches are cheap and reliable, so move ahead
-                // more aggressively before re-planning.
+            } else if (best.trial.dead) {
+                // A doomed route is only a hint about where to move next. Never
+                // trust half of it and walk directly toward its known collision.
+                commitNumerator = difficulty <= 1 ? 18 : 12;
+            } else if (best.trial.survivedHorizon && best.inputs.empty()) {
                 commitNumerator = 65;
-            } else if (difficulty <= 1) {
-                commitNumerator = 55;
+            } else if (best.trial.survivedHorizon) {
+                commitNumerator = difficulty <= 1 ? 52 : 44;
             } else {
-                commitNumerator = 45;
+                commitNumerator = 30;
             }
+
+            int committedSpan = std::max(1, span * commitNumerator / commitDenominator);
+            if (best.trial.dead)
+                committedSpan = std::min(committedSpan, 240);
 
             int applyUntil = bestComplete
                 ? bestFrame
-                : frame + std::max(1, span * commitNumerator / commitDenominator);
+                : frame + committedSpan;
 
             for (int i = frame; i < applyUntil && !lvl.latestState().dead; ++i) {
                 auto p1 = inputKey(static_cast<uint32_t>(i), false);
@@ -597,21 +689,22 @@ PathfinderResult pathfind(
             ++stagnantRounds;
         }
 
-        // Keep the useful stall recovery, but escalate search depth instead of
-        // making every easy section pay the hard-section cost up front.
-        if (stagnantRounds >= 9 && lvlBest.currentFrame() > 2) {
+        // Recover much sooner. Each search is expensive, so five stagnant rounds
+        // is already enough evidence that the current local path is bad.
+        if (stagnantRounds >= 5 && lvlBest.currentFrame() > 2) {
             lvl = lvlBest;
             int retreat = std::min(
                 lvlBest.currentFrame() - 1,
-                720 * (1 + std::min(recoveryCount, 10))
+                600 * (1 + std::min(recoveryCount, 8))
             );
             lvl.rollback(std::max(1, lvlBest.currentFrame() - retreat));
             lvl.syncPresses();
 
             ++recoveryCount;
             stagnantRounds = 0;
+            repeatedDeathZone = 0;
             fail = 1;
-            numAway = std::min(9000, 1500 + recoveryCount * 700);
+            numAway = std::min(7500, 1200 + recoveryCount * 600);
             rng.seed(rd() ^ static_cast<unsigned int>(lvl.currentFrame() + recoveryCount * 7919));
         }
 
