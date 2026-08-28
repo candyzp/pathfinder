@@ -1,7 +1,7 @@
 #pragma once
 
 #include <Object.hpp>
-
+#include <EffectObject.hpp>
 
 enum class ModifierType {
 	D,
@@ -11,18 +11,31 @@ enum class ModifierType {
 	F
 };
 
-/// Invisible letter blocks that alter collision behavior while the player overlaps them.
 struct ModifierBlock : public Object {
 	ModifierType type;
 	ModifierBlock(Vec2D size, std::unordered_map<int, std::string>&& fields);
 	void collide(Player&) const override;
 };
 
-/// 2.2 force block. Range/relative modes are intentionally approximated by the object's
-/// normal direction while still respecting authored force strength where available.
 struct ForceBlock : public Object {
 	float force;
 	float direction;
 	ForceBlock(Vec2D size, std::unordered_map<int, std::string>&& fields);
+	void collide(Player&) const override;
+};
+
+enum class GameplayTriggerType {
+	Gravity,
+	TimeWarp,
+	Reverse,
+	End,
+	GameplayRotation
+};
+
+/// Position-activated, non-visual triggers that alter player physics/pathing.
+struct GameplayTrigger : public EffectObject {
+	GameplayTriggerType type;
+	float value;
+	GameplayTrigger(Vec2D size, std::unordered_map<int, std::string>&& fields);
 	void collide(Player&) const override;
 };
