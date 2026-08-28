@@ -5,7 +5,7 @@
 #include <climits>
 
 Entity Player::innerHitbox() const {
-	return {pos, Vec2D{9, 9}, 0};
+	return {pos, Vec2D{9, 9}, rotation};
 }
 
 Entity Player::unrotatedHitbox() const {
@@ -23,11 +23,11 @@ void Player::setVelocity(double v, bool override) {
 }
 
 Player const& Player::prevPlayer() const {
-	return level->getState(frame - 1);
+	return level->getState(frame - 1, player2);
 }
 
 Player const* Player::nextPlayer() const {
-	return level->currentFrame() <= frame ? nullptr : &level->getState(frame + 1);
+	return level->currentFrame() <= frame ? nullptr : &level->getState(frame + 1, player2);
 }
 
 /**
@@ -45,8 +45,26 @@ double roundVel(double velocity, bool upsideDown) {
 }
 
 void Player::preCollision(bool pressed) {
-	pos.x += player_speeds[(int)speed] * dt;
-	pos.y += grav(velocity) * dt;
+	// Letter blocks only affect the frame in which the player overlaps them.
+	dBlock = false;
+	jBlock = false;
+	hBlock = false;
+	fBlock = false;
+
+	// Dash orbs replace normal horizontal/gravity movement while held.
+	if (dashing && pressed) {
+		float radians = deg2rad(dashAngle);
+		pos.x += std::cos(radians) * dashSpeed * dt;
+		pos.y += std::sin(radians) * dashSpeed * dt;
+		velocity = 0;
+		acceleration = 0;
+		grounded = false;
+	} else {
+		if (dashing && !pressed)
+			dashing = false;
+		pos.x += player_speeds[(int)speed] * dt;
+		pos.y += grav(velocity) * dt;
+	}
 
 	frame++;
 	timeElapsed += dt;
@@ -79,6 +97,15 @@ void Player::postCollision() {
 		size = small ? (size * 0.6) : (size / 0.6);
 	}
 
+	// A live dash owns movement until input is released or an S-block stops it.
+	if (dashing) {
+		grounded = false;
+		velocity = 0;
+		acceleration = 0;
+		buffer = false;
+		return;
+	}
+
 	if (gravBottom(*this) <= gravFloor() && !velocityOverride && velocity <= 0 ) {
 		pos.y = grav(gravFloor()) + grav(size.y / 2);
 		grounded = true;
@@ -86,7 +113,7 @@ void Player::postCollision() {
 	}
 
 	// Fell through ceiling, or hit floor
-	if (pos.y > 1476.3 || (upsideDown && getBottom() < floor)) {
+	if (pos.y > 1476.3 || pos.y < -1476.3 || (upsideDown && getBottom() < floor)) {
 		dead = true;
 		return;
 	}
@@ -134,14 +161,8 @@ Player::Player() :
 	Entity({{0, 15}, {30, 30}, 0}), frame(1), timeElapsed(0), dead(false),
 	vehicle(Vehicle::from(VehicleType::Cube)),
 	ceiling(999999), floor(0), grounded(true),
-	coyoteFrames(0), acceleration(0), velocity(0),
-	velocityOverride(false), button(false), input(false),
-	vehicleBuffer(false), upsideDown(false), small(false),
-	speed(1), slopeData({{}, 0, false}), roundVelocity(true) {}
-
-
-
-
-
-
-
+	coyoteFrames(0), acceleration(0), velocity(0), robotBoostTime(0),
+	dashAngle(0), dashSpeed(0), velocityOverride(false), button(false), input(false),
+	buffer(false), vehicleBuffer(false), upsideDown(false), small(false),
+	gravityPortal(false), roundVelocity(true), dashing(false), dualActive(false), player2(false),
+	dBlock(false), jBlock(false), hBlock(false), fBlock(false), speed(1), slopeData({{}, 0, false}) {}
