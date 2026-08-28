@@ -96,6 +96,44 @@ void Player::postCollision() {
 	}
 
 	vehicle.update(*this);
+
+	// 2.2 mode corrections from PlayerObject::updateTimeMod/updateJump.
+	// Robot uses half the normal yStart for its initial jump, then a 0.9 gravity factor.
+	if (vehicle.type == VehicleType::Robot) {
+		static constexpr double robotJumpVelocity[5] = {
+			286.740864,
+			301.8608586,
+			308.340864,
+			303.210864,
+			303.210864
+		};
+		static constexpr double robotGravity[5] = {
+			-2467.4582556,
+			-2514.6975186,
+			-2512.0730556,
+			-2522.5706556,
+			-2522.5706556
+		};
+
+		bool freshRobotJump = prevPlayer().grounded && input && !jBlock &&
+			(!prevPlayer().input || prevPlayer().buffer);
+		if (freshRobotJump)
+			setVelocity(robotJumpVelocity[speed]);
+
+		// While the jump is actively held, GD adds and removes the same 0.9-gravity
+		// increment during the boost phase. In the simulator this is equivalent to
+		// cancelling gravity until the short variable-height window ends.
+		if (input && velocity > 0 && robotBoostTime < 0.15)
+			acceleration = 0;
+		else
+			acceleration = robotGravity[speed];
+	}
+
+	// Swing uses the flying-mode 0.9582 gravity constant at 0.4x normal size and
+	// 0.6x mini size. Fresh-input gravity flips remain handled by Vehicle::update.
+	if (vehicle.type == VehicleType::Swing)
+		acceleration = small ? -1676.46672 : -1117.64448;
+
 	acceleration *= gravityScale;
 
 	if (!velocityOverride) {
