@@ -62,10 +62,9 @@ static TrialResult tryInputs(Level2& lvl, std::set<SearchInput> const& inputs) {
     auto press1Before = lvl.press1;
     auto press2Before = lvl.press2;
 
-    // Every candidate gets the exact same simulation horizon. The old solver
-    // stopped as soon as a candidate ran out of generated toggles, which
-    // accidentally rewarded spammy candidates simply because they contained
-    // more future inputs.
+    // Give every candidate the same amount of simulated future. The old solver
+    // stopped as soon as a candidate ran out of generated toggles, accidentally
+    // rewarding spammy candidates simply because they contained more clicks.
     constexpr int horizonFrames = 1000;
     int endFrame = startFrame + horizonFrames;
 
@@ -119,6 +118,7 @@ PathfinderResult pathfind(
     int numAway = 1000;
     int stagnantRounds = 0;
     int recoveryCount = 0;
+    float furthestX = lvl.latestState().pos.x;
 
     Level2 lvlBest = lvl;
 
@@ -129,7 +129,7 @@ PathfinderResult pathfind(
         int bestFrame = frame;
         size_t bestToggleCount = std::numeric_limits<size_t>::max();
 
-        constexpr int iterations = 360;
+        constexpr int iterations = 300;
         for (int i = 0; i < iterations; i++) {
             std::set<SearchInput> inputs;
             bool dual = lvl.latestState().dualActive;
@@ -158,8 +158,8 @@ PathfinderResult pathfind(
                 bestToggleCount = inputs.size();
                 bestInputs = std::move(inputs);
 
-                // A full clean horizon is already excellent. Keep searching a
-                // little for a simpler input set, but don't waste all 360 tries.
+                // Once a candidate survives the full look-ahead with almost no
+                // input, spending all remaining attempts usually only adds noise.
                 if (bestFrame - frame >= 1000 && bestToggleCount <= 2 && i > 40)
                     break;
             }
@@ -184,8 +184,8 @@ PathfinderResult pathfind(
                 fail += 50;
             }
         } else {
-            // Only commit the safer first part of the winning trial. The rest
-            // remains look-ahead and will be re-evaluated from the new state.
+            // Commit only the safer first part of the winning trial. The rest
+            // stays as look-ahead and gets re-evaluated from the next state.
             int applyUntil = bestFrame - static_cast<int>((bestFrame - frame) / 1.5);
             for (int i = frame; i < applyUntil && !lvl.latestState().dead; ++i) {
                 auto p1 = inputKey(static_cast<uint32_t>(i), false);
@@ -205,17 +205,23 @@ PathfinderResult pathfind(
             trueBest = lvl.currentFrame();
             fail = 0;
             numAway = 1000;
+        }
+
+        // Track real level progress, not just simulated time. A solver can burn
+        // thousands of frames around the same obstacle while its frame counter
+        // keeps climbing; that is the 50-70% "stuck" behavior we want to catch.
+        if (!lvl.latestState().dead && lvl.latestState().pos.x > furthestX + 1.f) {
+            furthestX = lvl.latestState().pos.x;
+            lvlBest = lvl;
             stagnantRounds = 0;
+            recoveryCount = 0;
         } else {
             ++stagnantRounds;
         }
 
-        if (lvl.currentFrame() > lvlBest.currentFrame() && !lvl.latestState().dead)
-            lvlBest = lvl;
-
-        // Hard stall recovery. Instead of spending minutes oscillating around
-        // the same 50-70% state, jump back to the best known path, retreat a
-        // progressively larger amount, and reseed the search.
+        // Hard stall recovery: restore the furthest real path, back up by a
+        // progressively larger window, reseed, then search the obstacle from a
+        // genuinely different approach instead of oscillating forever.
         if (stagnantRounds >= 12 && lvlBest.currentFrame() > 2) {
             lvl = lvlBest;
             int retreat = std::min(
@@ -234,7 +240,7 @@ PathfinderResult pathfind(
 
         if (callback && lvl.length > 0.f) {
             callback(std::clamp(
-                (static_cast<double>(lvlBest.latestState().pos.x) / lvl.length) * 100.0,
+                (static_cast<double>(furthestX) / lvl.length) * 100.0,
                 0.0,
                 100.0
             ));
@@ -242,8 +248,10 @@ PathfinderResult pathfind(
     }
 
     PathfinderResult result;
-    if (lvl.currentFrame() > lvlBest.currentFrame() && !lvl.latestState().dead)
+    if (!lvl.latestState().dead && lvl.latestState().pos.x > furthestX) {
+        furthestX = lvl.latestState().pos.x;
         lvlBest = lvl;
+    }
 
     Replay2 output;
     for (size_t i = 1; i < lvlBest.gameStates.size(); ++i) {
@@ -277,7 +285,7 @@ PathfinderResult pathfind(
     result.macro = output.exportData().unwrapOr({});
     if (lvl.length > 0.f) {
         result.progress = std::clamp(
-            (static_cast<double>(lvlBest.latestState().pos.x) / lvl.length) * 100.0,
+            (static_cast<double>(furthestX) / lvl.length) * 100.0,
             0.0,
             100.0
         );
