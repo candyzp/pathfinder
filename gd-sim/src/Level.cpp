@@ -2,6 +2,7 @@
 #include <iomanip>
 #include <cfloat>
 #include <cmath>
+#include <algorithm>
 #include <unordered_set>
 #include <Level.hpp>
 
@@ -37,6 +38,56 @@ void registerGroupTargets(std::unordered_map<int, std::string> const& obj,
 	for (int group : groups)
 		targets[group].push_back(marker);
 }
+
+float robustAuthoredExtent(std::vector<float> xs) {
+	if (xs.empty())
+		return 0.f;
+
+	std::sort(xs.begin(), xs.end());
+
+	std::vector<float> uniqueXs;
+	uniqueXs.reserve(xs.size());
+	for (float x : xs) {
+		if (uniqueXs.empty() || std::abs(x - uniqueXs.back()) > 0.5f)
+			uniqueXs.push_back(x);
+	}
+
+	if (uniqueXs.size() < 8)
+		return uniqueXs.back();
+
+	size_t anchor = (uniqueXs.size() - 1) * 80 / 100;
+	float extent = uniqueXs[anchor];
+	constexpr float maxConnectedGap = 2400.f;
+
+	for (size_t i = anchor + 1; i < uniqueXs.size(); ++i) {
+		if (uniqueXs[i] - extent > maxConnectedGap)
+			break;
+		extent = uniqueXs[i];
+	}
+
+	return extent;
+}
+
+UnsupportedObjectInfo makeUnsupportedInfo(
+	int objectID,
+	std::unordered_map<int, std::string> const& obj
+) {
+	float scale = stod_def(obj.contains(32) ? obj.at(32) : std::string{}, 1.f);
+	float scaleX = stod_def(obj.contains(128) ? obj.at(128) : std::string{}, 1.f);
+	float scaleY = stod_def(obj.contains(129) ? obj.at(129) : std::string{}, 1.f);
+
+	UnsupportedObjectInfo info;
+	info.objectID = objectID;
+	info.entity = Entity {
+		{
+			stod_def(obj.contains(2) ? obj.at(2) : std::string{}, 0.f),
+			stod_def(obj.contains(3) ? obj.at(3) : std::string{}, 0.f)
+		},
+		{30.f * scale * scaleX, 30.f * scale * scaleY},
+		- stod_def(obj.contains(6) ? obj.at(6) : std::string{}, 0.f)
+	};
+	return info;
+}
 }
 
 void Level::initLevelSettings(std::string const& lvlSettings, Player& player) {
@@ -49,7 +100,6 @@ void Level::initLevelSettings(std::string const& lvlSettings, Player& player) {
 		obj[k] = v;
 	}
 
-	// Helper to make a default value for nonexistant keys
 	auto get_or = [&obj](std::string const& key, std::string const& def) {
 		if (auto it = obj.find(key); it != obj.end())
 			return it->second.c_str();
@@ -58,7 +108,6 @@ void Level::initLevelSettings(std::string const& lvlSettings, Player& player) {
 
 	player.speed = atoi(get_or("kA4", "0"));
 
-	// RobTop stores 1x speed as 0 and slow speed as 1.
 	if (player.speed == 0)
 		player.speed = 1;
 	else if (player.speed == 1)
@@ -83,6 +132,9 @@ Level::Level(std::string const& lvlString) {
 	bool first = true;
 
 	auto player = Player();
+	std::vector<float> authoredXs;
+	float knownGameplayExtent = 0.f;
+	float explicitEndX = -1.f;
 
 	while (std::getline(ss, objstr, ';')) {
 		if (first) {
@@ -101,35 +153,30 @@ Level::Level(std::string const& lvlString) {
 				obj[atoi(k.c_str())] = v;
 		}
 
-		if (!obj.contains(1))
+		if (!obj.contains(1) || obj[1].empty())
 			continue;
 
-		// Every authored object contributes to the level's real extent, even when
-		// Pathfinder does not have a simulator class for that object yet. Previously
-		// unsupported 2.2/decorative objects vanished before length was updated, which
-		// made modern levels appear to end at 70-90% and poisoned the progress counter.
-		if (auto xIt = obj.find(2); xIt != obj.end() && !xIt->second.empty()) {
-			float authoredX = stod_def(xIt->second, 0.f);
-			if (std::isfinite(authoredX) && authoredX >= 0.f) {
-				length = std::max(length, authoredX + 100.f);
+		int objectID = atoi(obj[1].c_str());
+		float authoredX = stod_def(obj.contains(2) ? obj[2] : std::string{}, 0.f);
+		bool validAuthoredX = std::isfinite(authoredX) && authoredX >= 0.f;
 
-				// Preserve empty spatial sections too. This makes unknown objects part of
-				// the authored section map without pretending they have collision physics.
-				size_t authoredSection = static_cast<size_t>(std::max(0.f, authoredX / sectionSize));
-				if (authoredSection >= sections.size())
-					sections.resize(authoredSection + 1);
-			}
+		if (validAuthoredX && objectID != 31) {
+			authoredXs.push_back(authoredX);
+			authoredExtent = std::max(authoredExtent, authoredX + 100.f);
 		}
 
-		// Group targets must be indexed before Object::create moves the parsed map,
-		// and must include decorative/invisible helper objects that the physics parser ignores.
+		if (validAuthoredX && (objectID == 1931 || objectID == 3600))
+			explicitEndX = std::max(explicitEndX, authoredX);
+
 		registerGroupTargets(obj, groupTargets);
 
-		if (obj[1] == "31") {
+		if (objectID == 31) {
 			initLevelSettings(objstr, player);
 			player.pos.x = stod_def(obj[2], 0);
 			player.pos.y = stod_def(obj[3], 0);
 		}
+
+		auto unsupported = makeUnsupportedInfo(objectID, obj);
 
 		if (auto ob_o = Object::create(std::move(obj))) {
 			auto ob = ob_o.value();
@@ -140,8 +187,29 @@ Level::Level(std::string const& lvlString) {
 			if (sectionPos >= sections.size())
 				sections.resize(sectionPos + 1);
 			sections[sectionPos].push_back(ob);
+
+			if (std::isfinite(ob->pos.x) && ob->pos.x >= 0.f)
+				knownGameplayExtent = std::max(knownGameplayExtent, ob->pos.x + 100.f);
+		} else if (objectID != 31) {
+			unsupportedObjects.push_back(std::move(unsupported));
 		}
 	}
+
+	float clusteredExtent = robustAuthoredExtent(std::move(authoredXs));
+	float inferredLength = std::max(
+		knownGameplayExtent,
+		clusteredExtent > 0.f ? clusteredExtent + 100.f : 0.f
+	);
+
+	if (explicitEndX >= 0.f) {
+		float explicitLength = explicitEndX + 30.f;
+		if (inferredLength <= 0.f ||
+			(explicitLength >= inferredLength * 0.60f && explicitLength <= inferredLength + 2400.f)) {
+			inferredLength = explicitLength;
+		}
+	}
+
+	length = std::max(inferredLength, player.pos.x + 300.f);
 
 	player.level = this;
 	player.player2 = false;
