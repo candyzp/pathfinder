@@ -39,7 +39,10 @@ void registerGroupTargets(std::unordered_map<int, std::string> const& obj,
 		targets[group].push_back(marker);
 }
 
-float robustAuthoredExtent(std::vector<float> xs) {
+// Estimate the playable X span from the continuous authored object cloud that starts
+// near the player's real start position. Remote decoration/helper clusters are common in
+// modern levels and must not become the completion point just because they have a huge X.
+float connectedAuthoredExtent(std::vector<float> xs, float startX) {
 	if (xs.empty())
 		return 0.f;
 
@@ -52,17 +55,24 @@ float robustAuthoredExtent(std::vector<float> xs) {
 			uniqueXs.push_back(x);
 	}
 
-	if (uniqueXs.size() < 8)
-		return uniqueXs.back();
+	constexpr float backAllowance = 600.f;
+	constexpr float maxConnectedGap = 4800.f;
+	float minimumX = std::max(0.f, startX - backAllowance);
 
-	size_t anchor = (uniqueXs.size() - 1) * 80 / 100;
-	float extent = uniqueXs[anchor];
-	constexpr float maxConnectedGap = 2400.f;
+	auto it = std::lower_bound(uniqueXs.begin(), uniqueXs.end(), minimumX);
+	if (it == uniqueXs.end())
+		return 0.f;
 
-	for (size_t i = anchor + 1; i < uniqueXs.size(); ++i) {
-		if (uniqueXs[i] - extent > maxConnectedGap)
+	// If there is no authored content anywhere near the actual start, don't let a
+	// remote helper cluster become the whole level. The caller will use a small fallback.
+	if (*it > startX + maxConnectedGap)
+		return 0.f;
+
+	float extent = *it;
+	for (++it; it != uniqueXs.end(); ++it) {
+		if (*it - extent > maxConnectedGap)
 			break;
-		extent = uniqueXs[i];
+		extent = *it;
 	}
 
 	return extent;
@@ -133,8 +143,6 @@ Level::Level(std::string const& lvlString) {
 
 	auto player = Player();
 	std::vector<float> authoredXs;
-	float knownGameplayExtent = 0.f;
-	float explicitEndX = -1.f;
 
 	while (std::getline(ss, objstr, ';')) {
 		if (first) {
@@ -165,9 +173,6 @@ Level::Level(std::string const& lvlString) {
 			authoredExtent = std::max(authoredExtent, authoredX + 100.f);
 		}
 
-		if (validAuthoredX && (objectID == 1931 || objectID == 3600))
-			explicitEndX = std::max(explicitEndX, authoredX);
-
 		registerGroupTargets(obj, groupTargets);
 
 		if (objectID == 31) {
@@ -187,28 +192,13 @@ Level::Level(std::string const& lvlString) {
 			if (sectionPos >= sections.size())
 				sections.resize(sectionPos + 1);
 			sections[sectionPos].push_back(ob);
-
-			if (std::isfinite(ob->pos.x) && ob->pos.x >= 0.f)
-				knownGameplayExtent = std::max(knownGameplayExtent, ob->pos.x + 100.f);
 		} else if (objectID != 31) {
 			unsupportedObjects.push_back(std::move(unsupported));
 		}
 	}
 
-	float clusteredExtent = robustAuthoredExtent(std::move(authoredXs));
-	float inferredLength = std::max(
-		knownGameplayExtent,
-		clusteredExtent > 0.f ? clusteredExtent + 100.f : 0.f
-	);
-
-	if (explicitEndX >= 0.f) {
-		float explicitLength = explicitEndX + 30.f;
-		if (inferredLength <= 0.f ||
-			(explicitLength >= inferredLength * 0.60f && explicitLength <= inferredLength + 2400.f)) {
-			inferredLength = explicitLength;
-		}
-	}
-
+	float connectedExtent = connectedAuthoredExtent(std::move(authoredXs), player.pos.x);
+	float inferredLength = connectedExtent > 0.f ? connectedExtent + 100.f : 0.f;
 	length = std::max(inferredLength, player.pos.x + 300.f);
 
 	player.level = this;
