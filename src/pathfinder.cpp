@@ -1,6 +1,7 @@
 #include <set>
 #include <cstdint>
 #include <algorithm>
+#include <cmath>
 #include <Level.hpp>
 #include <random>
 #include <limits>
@@ -65,6 +66,11 @@ static bool continuousMode(VehicleType type) {
     return type == VehicleType::Ship ||
            type == VehicleType::Wave ||
            type == VehicleType::Swing;
+}
+
+static bool reachedGoal(Level2& lvl) {
+    auto& player = lvl.latestState();
+    return player.completed || player.pos.x >= lvl.length;
 }
 
 static bool betterCandidate(CandidateResult const& a, CandidateResult const& b) {
@@ -161,7 +167,7 @@ static TrialResult tryInputs(Level2& lvl, InputSet const& inputs, int horizonFra
 
     while (lvl.currentFrame() < endFrame &&
            !lvl.latestState().dead &&
-           lvl.latestState().pos.x < lvl.length) {
+           !reachedGoal(lvl)) {
         uint32_t current = static_cast<uint32_t>(lvl.currentFrame());
         auto p1 = inputKey(current, false);
         auto p2 = inputKey(current, true);
@@ -174,7 +180,7 @@ static TrialResult tryInputs(Level2& lvl, InputSet const& inputs, int horizonFra
         lvl.runFrame(lvl.press1, lvl.press2, 1.f / 240.f);
     }
 
-    bool complete = !lvl.latestState().dead && lvl.latestState().pos.x >= lvl.length;
+    bool complete = !lvl.latestState().dead && reachedGoal(lvl);
     TrialResult result {
         lvl.currentFrame(),
         lvl.latestState().pos.x,
@@ -547,9 +553,29 @@ static CandidateResult searchBestInputs(
 PathfinderResult pathfind(
     std::string const& lvlString,
     std::atomic_bool& stop,
-    std::function<void(double)> callback
+    std::function<void(double)> callback,
+    float trustedEndX
 ) {
     Level2 lvl(lvlString);
+    float solveStartX = lvl.latestState().pos.x;
+
+    // When Pathfinder is launched from an active PlayLayer, Geometry Dash already
+    // knows the exact end position. Prefer that over any object-cloud inference.
+    if (std::isfinite(trustedEndX) && trustedEndX > solveStartX + 30.f)
+        lvl.length = trustedEndX;
+
+    auto progressFor = [&](float x, bool complete) -> double {
+        if (complete)
+            return 100.0;
+        double span = static_cast<double>(lvl.length - solveStartX);
+        if (span <= 1.0)
+            return 0.0;
+        return std::clamp(
+            ((static_cast<double>(x) - solveStartX) / span) * 100.0,
+            0.0,
+            100.0
+        );
+    };
 
     std::random_device rd;
     std::mt19937 rng(rd());
@@ -561,11 +587,11 @@ PathfinderResult pathfind(
     int recoveryCount = 0;
     int repeatedDeathZone = 0;
     float lastDeathX = -100000.f;
-    float furthestX = lvl.latestState().pos.x;
+    float furthestX = solveStartX;
 
     Level2 lvlBest = lvl;
 
-    while (lvl.latestState().pos.x < lvl.length && !stop) {
+    while (!reachedGoal(lvl) && !stop) {
         auto frame = lvl.currentFrame();
 
         // Faster normal forecast, with extra depth reserved for sections that
@@ -615,7 +641,7 @@ PathfinderResult pathfind(
             continue;
         }
 
-        if (bestFrame == frame || best.trial.x <= lvl.latestState().pos.x) {
+        if (!bestComplete && (bestFrame == frame || best.trial.x <= lvl.latestState().pos.x)) {
             lvl.rollback(std::max(std::max(frame - fail, trueBest - numAway), 1));
             lvl.syncPresses();
 
@@ -669,7 +695,7 @@ PathfinderResult pathfind(
                     lvl.press2 = !lvl.press2;
 
                 lvl.runFrame(lvl.press1, lvl.press2, 1.f / 240.f);
-                if (lvl.latestState().pos.x >= lvl.length)
+                if (reachedGoal(lvl))
                     break;
             }
         }
@@ -680,7 +706,11 @@ PathfinderResult pathfind(
             numAway = 1000;
         }
 
-        if (!lvl.latestState().dead && lvl.latestState().pos.x > furthestX + 1.f) {
+        if (!lvl.latestState().dead && reachedGoal(lvl)) {
+            furthestX = std::max(furthestX, lvl.latestState().pos.x);
+            lvlBest = lvl;
+            stagnantRounds = 0;
+        } else if (!lvl.latestState().dead && lvl.latestState().pos.x > furthestX + 1.f) {
             furthestX = lvl.latestState().pos.x;
             lvlBest = lvl;
             stagnantRounds = 0;
@@ -708,18 +738,16 @@ PathfinderResult pathfind(
             rng.seed(rd() ^ static_cast<unsigned int>(lvl.currentFrame() + recoveryCount * 7919));
         }
 
-        if (callback && lvl.length > 0.f) {
-            callback(std::clamp(
-                (static_cast<double>(furthestX) / lvl.length) * 100.0,
-                0.0,
-                100.0
-            ));
+        if (callback && lvl.length > solveStartX) {
+            bool bestIsComplete = !lvlBest.latestState().dead && reachedGoal(lvlBest);
+            callback(progressFor(furthestX, bestIsComplete));
         }
     }
 
     PathfinderResult result;
-    if (!lvl.latestState().dead && lvl.latestState().pos.x > furthestX) {
-        furthestX = lvl.latestState().pos.x;
+    if (!lvl.latestState().dead &&
+        (reachedGoal(lvl) || lvl.latestState().pos.x > furthestX)) {
+        furthestX = std::max(furthestX, lvl.latestState().pos.x);
         lvlBest = lvl;
     }
 
@@ -753,13 +781,7 @@ PathfinderResult pathfind(
     });
 
     result.macro = output.exportData().unwrapOr({});
-    if (lvl.length > 0.f) {
-        result.progress = std::clamp(
-            (static_cast<double>(furthestX) / lvl.length) * 100.0,
-            0.0,
-            100.0
-        );
-    }
-    result.complete = !lvlBest.latestState().dead && lvlBest.latestState().pos.x >= lvl.length;
+    result.complete = !lvlBest.latestState().dead && reachedGoal(lvlBest);
+    result.progress = progressFor(furthestX, result.complete);
     return result;
 }
