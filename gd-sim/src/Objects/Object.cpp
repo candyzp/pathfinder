@@ -10,7 +10,7 @@
 #include <Pad.hpp>
 #include <Orb.hpp>
 #include <Slope.hpp>
-
+#include <AdvancedObjects.hpp>
 
 /// Helper classes and functions to make assigning object IDs easier
 struct range : public std::pair<int, int> {
@@ -32,6 +32,8 @@ std::vector<int> unroll(std::vector<range> ranges) {
 			return ObjectContainer(type({w, h}, std::move(ob)));
 
 std::optional<ObjectContainer> Object::create(std::unordered_map<int, std::string>&& ob) {
+	if (!ob.contains(1) || ob[1].empty())
+		return {};
 	auto id = std::stoi(ob[1]);
 
 	objs(({
@@ -42,9 +44,9 @@ std::optional<ObjectContainer> Object::create(std::unordered_map<int, std::strin
 		175, {207, 210}, {212, 213},
 		{247, 250}, {252, 258},
 		{260, 261}, {263, 265},
-		{267, 272}, {274, 275}, 
+		{267, 272}, {274, 275},
 		467, {469, 471}, {1203, 1204},
-		{1209, 1210}, {1221, 1222}, 1226 
+		{1209, 1210}, {1221, 1222}, 1226
 	}), Block, 30, 30)
 	objs((
 		{ 64, 195, 206, 220, 661,
@@ -121,15 +123,21 @@ std::optional<ObjectContainer> Object::create(std::unordered_map<int, std::strin
 	objs(({ 1707 }), Sawblade, 12, 12)
 	objs(({ {1701, 1703} }), Sawblade, 6, 6)
 
-	objs(({ 35 }), Pad, 25, 4)
-	objs(({ 140 }), Pad, 25, 5)
-	objs(({ 67 }), Pad, 25, 6)
-	objs(({ 36, 84, 141, 1022, 1330, 1333 }), Orb, 36, 36)
+	// Pads and orbs, including modern dash/spider variants.
+	objs(({ 35, 67, 140, 1332, 3005 }), Pad, 25, 6)
+	objs(({ 36, 84, 141, 1022, 1330, 1333, 1704, 1751, 3004, 3027 }), Orb, 36, 36)
 
-	objs(({ 12, 13, 47, 111 , 660 }), VehiclePortal, 34, 86)
-	objs(({ 10, 11 }), GravityPortal, 25, 75)
-
+	// Game-mode and state portals.
+	objs(({ 12, 13, 47, 111, 660, 745, 1331, 1933 }), VehiclePortal, 34, 86)
+	objs(({ 10, 11, 2926 }), GravityPortal, 25, 75)
+	objs(({ 286, 287 }), DualPortal, 34, 86)
+	objs(({ 747 }), TeleportPortal, 34, 86)
 	objs(({ 99, 101 }), SizePortal, 31, 90)
+
+	// 2.1/2.2 modifier blocks. These are invisible gameplay objects, so a broad
+	// hitbox is intentional: the authored scale fields narrow/expand it as needed.
+	objs(({ 1755, 1813, 1829, 1859, 2866 }), ModifierBlock, 30, 30)
+	objs(({ 2069 }), ForceBlock, 30, 30)
 
 	objs(({ 143 }), BreakableBlock, 30, 30)
 
@@ -155,10 +163,9 @@ std::optional<ObjectContainer> Object::create(std::unordered_map<int, std::strin
 	}), Slope, 60, 30)
 	objs(({ 364, 366, 1718 }), SlopeHazard, 60, 30);
 
-	// Any block that isnt' defined is ignored
+	// Decorative and unsupported non-collision objects are deliberately ignored.
 	return {};
 }
-
 
 Object::Object(Vec2D s, std::unordered_map<int, std::string>&& fields) {
 	size = s;
@@ -177,8 +184,8 @@ Object::Object(Vec2D s, std::unordered_map<int, std::string>&& fields) {
 }
 
 bool Object::touching(Player const& player) const {
-	int r = std::abs(rotation);
-	return intersects((r == 0 || r == 90 || r == 180 || r == 270) ? player.unrotatedHitbox() : (Entity&)player);
+	int r = std::abs((int)rotation) % 360;
+	return intersects((r == 0 || r == 90 || r == 180 || r == 270) ? player.unrotatedHitbox() : static_cast<Entity const&>(player));
 }
 
 void Object::collide(Player&) const {
