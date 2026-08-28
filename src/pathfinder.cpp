@@ -81,7 +81,6 @@ std::vector<uint8_t> pathfind(std::string const& lvlString, std::atomic_bool& st
 	std::random_device rd;
 	std::mt19937 rng(rd());
 	std::uniform_int_distribution<int> frameDist(0, 999);
-	std::uniform_int_distribution<int> playerDist(0, 1);
 
 	int trueBest = 0;
 	int fail = 1;
@@ -98,13 +97,22 @@ std::vector<uint8_t> pathfind(std::string const& lvlString, std::atomic_bool& st
 		constexpr int iterations = 300;
 		for (int i = 0; i < iterations; i++) {
 			std::set<SearchInput> inputs;
-
 			bool dual = lvl.latestState().dualActive;
-			int candidateCount = dual ? 54 : 30;
-			for (int j = 0; j < candidateCount; j++) {
+
+			// Search both timelines even slightly before a dual begins. A P2 toggle while
+			// solo only changes the pending held state; once the dual portal is entered it
+			// becomes the second player's real input on the next frame. This prevents tight
+			// dual entries from being forced to wait for a whole new search chunk.
+			int p1Candidates = dual ? 27 : 30;
+			int p2Candidates = dual ? 27 : 8;
+
+			for (int j = 0; j < p1Candidates; ++j) {
 				uint32_t candidateFrame = static_cast<uint32_t>(frame + frameDist(rng));
-				bool player2 = dual ? (playerDist(rng) != 0) : false;
-				inputs.insert(inputKey(candidateFrame, player2));
+				inputs.insert(inputKey(candidateFrame, false));
+			}
+			for (int j = 0; j < p2Candidates; ++j) {
+				uint32_t candidateFrame = static_cast<uint32_t>(frame + frameDist(rng));
+				inputs.insert(inputKey(candidateFrame, true));
 			}
 
 			int nf = tryInputs(lvl, inputs);
