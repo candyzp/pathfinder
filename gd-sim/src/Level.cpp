@@ -1,5 +1,7 @@
 #include <sstream>
 #include <iomanip>
+#include <cfloat>
+#include <cmath>
 #include <Level.hpp>
 
 void Level::initLevelSettings(std::string const& lvlSettings, Player& player) {
@@ -31,7 +33,10 @@ void Level::initLevelSettings(std::string const& lvlSettings, Player& player) {
 		player.size = player.size * 0.6;
 
 	player.upsideDown = atoi(get_or("kA11", "0"));
-	player.vehicle = Vehicle::from(static_cast<VehicleType>(atoi(get_or("kA2", "0"))));
+	int vehicle = atoi(get_or("kA2", "0"));
+	if (vehicle < 0 || vehicle > static_cast<int>(VehicleType::Swing))
+		vehicle = 0;
+	player.vehicle = Vehicle::from(static_cast<VehicleType>(vehicle));
 
 	player.floor = 0;
 	player.ceiling = player.vehicle.bounds;
@@ -88,33 +93,42 @@ Level::Level(std::string const& lvlString) {
 	}
 
 	player.level = this;
+	player.player2 = false;
 	gameStates.push_back(player);
+
+	Player second = player;
+	second.player2 = true;
+	second.dualActive = false;
+	gameStates2.push_back(second);
 }
 
-Player& Level::runFrame(bool pressed, float dt) {
-	Player p = gameStates.back();
-
+void Level::simulatePlayer(Player& p, bool pressed, float dt) {
 	// Can't play if you're dead
 	if (p.dead)
-		return gameStates.back();
+		return;
 
 	p.dt = dt;
 	p.preCollision(pressed);
+
+	if (sections.empty()) {
+		p.postCollision();
+		return;
+	}
 
 	// Objects from previous, current, and next section are all collision tested
 	size_t sectionIdx = std::min(std::max(0, (int)(p.pos.x / sectionSize)), (int)sections.size() - 1);
 	auto prevSection = &sections[sectionIdx == 0 ? 0 : sectionIdx - 1];
 	auto currSection = &sections[sectionIdx];
-	auto nextSection = &sections[sectionIdx + 1 >= sections.size() - 1 ? sections.size() - 1 : sectionIdx + 1];
+	auto nextSection = &sections[sectionIdx + 1 >= sections.size() ? sections.size() - 1 : sectionIdx + 1];
 
-	// If at start or end of level, previous/next section is invalid so don't use it
-	std::vector<ObjectContainer>* sections[3] = { prevSection, nullptr, nullptr };
-	if (&currSection != &prevSection)
-		sections[1] = currSection;
-	if (&nextSection != &currSection)
-		sections[2] = nextSection;
+	// If at start or end of level, previous/next section is invalid so don't use it twice
+	std::vector<ObjectContainer>* nearby[3] = { prevSection, nullptr, nullptr };
+	if (currSection != prevSection)
+		nearby[1] = currSection;
+	if (nextSection != currSection && nextSection != prevSection)
+		nearby[2] = nextSection;
 
-	// Blocks are hazards processed separately
+	// Blocks and hazards are processed separately to preserve GD collision priority.
 	std::vector<ObjectContainer> blocks;
 	std::vector<ObjectContainer> hazards;
 	blocks.reserve(100);
@@ -122,7 +136,7 @@ Player& Level::runFrame(bool pressed, float dt) {
 
 	size_t numCollisions = 0;
 
-	for (auto section : sections) {
+	for (auto section : nearby) {
 		if (section == nullptr) continue;
 		for (auto& o : *section) {
 			if (p.dead) break;
@@ -138,7 +152,7 @@ Player& Level::runFrame(bool pressed, float dt) {
 	}
 
 	// Blocks are processed in descending order
-	for (int i = blocks.size() - 1; i >= 0; --i) {
+	for (int i = static_cast<int>(blocks.size()) - 1; i >= 0; --i) {
 		if (p.dead) break;
 		auto& b = blocks[i];
 		if (b->touching(p)) {
@@ -152,7 +166,6 @@ Player& Level::runFrame(bool pressed, float dt) {
 		if (h->touching(p)) {
 			++numCollisions;
 			h->collide(p);
-			
 		}
 	}
 
@@ -160,37 +173,117 @@ Player& Level::runFrame(bool pressed, float dt) {
 		p.postCollision();
 
 	if (debug) {
-		std::cout << "Frame " << gameStates.size() << std::fixed << std::setprecision(8)
+		std::cout << "P" << (p.player2 ? 2 : 1) << " Frame " << currentFrame() << std::fixed << std::setprecision(8)
 				  << " X " << p.pos.x << " Y " << p.pos.y - 15 << " Vel " << p.velocity
 				  << " Accel " << p.acceleration << " Rot " << p.rotation << " Coll " << numCollisions
  				  << std::endl;
+	}
+}
 
-		if (p.button != gameStates.back().button) {
-			std::cout << "Input X " << p.pos.x << " Y " << p.pos.y - 15 << std::endl;
+Player& Level::runFrame(bool pressed, float dt) {
+	return runFrame(pressed, pressed, dt);
+}
+
+Player& Level::runFrame(bool player1Pressed, bool player2Pressed, float dt) {
+	Player p1 = gameStates.back();
+	Player p2 = gameStates2.back();
+	bool wasDual = p1.dualActive;
+
+	simulatePlayer(p1, player1Pressed, dt);
+
+	if (p1.dualActive) {
+		if (!wasDual) {
+			// GD creates the second icon as a mirrored partner. Keep both timelines aligned
+			// so rollback remains O(1) and deterministic.
+			p2 = p1;
+			p2.player2 = true;
+			p2.dualActive = true;
+			if (std::isfinite(p1.ceiling) && p1.ceiling < FLT_MAX / 2) {
+				p2.pos.y = p1.floor + p1.ceiling - p1.pos.y;
+				p2.upsideDown = !p1.upsideDown;
+				p2.velocity = -p1.velocity;
+			}
+		} else {
+			p2.dualActive = true;
+			simulatePlayer(p2, player2Pressed, dt);
+
+			// Either player can hit the solo portal.
+			if (!p2.dualActive)
+				p1.dualActive = false;
 		}
+
+		// In Geometry Dash, one player dying kills the whole dual.
+		if (p1.dead || p2.dead) {
+			p1.dead = true;
+			p2.dead = true;
+		}
+	} else {
+		// Keep a shadow timeline while solo so frame indices never drift.
+		p2 = p1;
+		p2.player2 = true;
+		p2.dualActive = false;
 	}
 
-	gameStates.push_back(p);
+	gameStates.push_back(p1);
+	gameStates2.push_back(p2);
 	return gameStates.back();
 }
 
+float Level::findOppositeSurface(Player const& player, bool towardsCeiling) const {
+	float best = towardsCeiling ? FLT_MAX : -FLT_MAX;
+	float halfWidth = player.size.x / 2.f;
+
+	for (auto const& section : sections) {
+		for (auto const& o : section) {
+			if (o->prio != 1)
+				continue;
+
+			// Spider collision uses solid block surfaces. Slopes are intentionally
+			// approximated by their bounding surface here; their normal collision
+			// pass corrects the landing on the following frame.
+			if (player.pos.x + halfWidth < o->getLeft() || player.pos.x - halfWidth > o->getRight())
+				continue;
+
+			if (towardsCeiling) {
+				float surface = o->getBottom();
+				if (surface >= player.getTop() - 0.5f && surface < best)
+					best = surface;
+			} else {
+				float surface = o->getTop();
+				if (surface <= player.getBottom() + 0.5f && surface > best)
+					best = surface;
+			}
+		}
+	}
+
+	if (towardsCeiling)
+		return best == FLT_MAX ? player.ceiling : best;
+	return best == -FLT_MAX ? player.floor : best;
+}
 
 void Level::rollback(int frame) {
-	gameStates.resize(frame > 0 ? frame : 1);
+	int target = frame > 0 ? frame : 1;
+	gameStates.resize(target);
+	gameStates2.resize(target);
 }
 
 int Level::currentFrame() const {
 	return gameStates.size();
 }
 
-Player const& Level::getState(int frame) const {
-	if (frame == 0)
-		return gameStates[0];
-	if (gameStates.size() < frame)
-		return gameStates.back();
-	return gameStates[frame - 1];
+Player const& Level::getState(int frame, bool player2) const {
+	auto const& states = player2 ? gameStates2 : gameStates;
+	if (frame <= 0)
+		return states[0];
+	if (states.size() < static_cast<size_t>(frame))
+		return states.back();
+	return states[frame - 1];
 }
 
 Player& Level::latestState() {
 	return gameStates.back();
+}
+
+Player& Level::latestState2() {
+	return gameStates2.back();
 }
