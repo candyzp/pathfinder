@@ -10,32 +10,20 @@ Block::Block(Vec2D s, std::unordered_map<int, std::string>&& fields) : Object(s,
 	// Blocks have a prio of 1, so they are processed later than most other objects.
 	prio = 1;
 
-	// No rotation allowed
-	if ((int)fabs(rotation) % 180 != 0)
+	// Cardinal rotations can still use the old fast axis-aligned collision path.
+	float normalized = std::fmod(rotation, 360.f);
+	if (normalized < 0) normalized += 360.f;
+	if (std::abs(normalized - 90.f) < 0.01f || std::abs(normalized - 270.f) < 0.01f) {
 		size = {size.y, size.x};
-	rotation = 0;
+		rotation = 0;
+	} else if (normalized < 0.01f || std::abs(normalized - 180.f) < 0.01f || std::abs(normalized - 360.f) < 0.01f) {
+		rotation = 0;
+	}
 
 	// Edge case for this specific block.
-	if (fields[1] == "468" && size.y == 5) {
+	if (fields[1] == "468" && size.y == 5)
 		size.y -= 3.5;
-	}
 }
-
-
-/**
- * "Snapping" here refers to what happens when the cube player is
- * holding a button on given block staircases. In order to prevent
- * the player from falling off a block staircase, the X position
- * is manually adjusted by a set amount. The amount depends on
- * the type of staircase, speed, and cube size.
- */
-enum class SnapType {
-	None,
-	BigStair,
-	LittleStair,
-	DownStair
-};
-
 
 float snapThreshold(Vec2D const& diff, Player const& p) {
 	std::array<Vec2D, 3> stairs;
@@ -78,80 +66,165 @@ void trySnap(Block const& b, Player& p) {
 	diff.y = p.grav(diff.y);
 
 	if (float threshold = snapThreshold(diff, p); threshold > 0) {
-		p.pos.x = std::clamp(
-			p.level->getState(snapData.playerFrame).nextPlayer()->pos.x + diff.x,
-			p.pos.x - threshold,
-			p.pos.x + threshold
-		);
+		auto next = p.level->getState(snapData.playerFrame, p.player2).nextPlayer();
+		if (!next) return;
+		p.pos.x = std::clamp(next->pos.x + diff.x, p.pos.x - threshold, p.pos.x + threshold);
 	}
 }
 
-void Block::collide(Player& p) const {
-	// The maximum amount the player can dip below block while still being snapped up
-	int clip = (p.vehicle.type == VehicleType::Ufo || p.vehicle.type == VehicleType::Ship) ? 7 : 10;
+static bool isCardinal(Block const& b) {
+	return std::abs(std::fmod(b.rotation, 90.f)) < 0.01f;
+}
 
-	// When hitting blue orbs/pads, there is a single frame where block collisions arent done.
-	// TODO might be able to be merged with the other pad check
+// Resolve an arbitrarily rotated solid rectangle in the block's local coordinate system.
+// This is deliberately geometric instead of special-casing Cube/UFO/Ball rotations.
+static bool collideRotated(Block const& b, Player& p) {
+	if (!b.intersects(static_cast<Entity const&>(p)))
+		return false;
+
+	float rad = deg2rad(b.rotation);
+	float c = std::cos(rad);
+	float s = std::sin(rad);
+	Vec2D delta = p.pos - b.pos;
+	Vec2D local(delta.x * c + delta.y * s, -delta.x * s + delta.y * c);
+
+	float pc = std::abs(c);
+	float ps = std::abs(s);
+	float playerHalfX = pc * p.size.x * 0.5f + ps * p.size.y * 0.5f;
+	float playerHalfY = ps * p.size.x * 0.5f + pc * p.size.y * 0.5f;
+	float overlapX = b.size.x * 0.5f + playerHalfX - std::abs(local.x);
+	float overlapY = b.size.y * 0.5f + playerHalfY - std::abs(local.y);
+	if (overlapX <= 0 || overlapY <= 0)
+		return false;
+
+	// Side impact remains lethal for normal ground vehicles. Flying vehicles get a
+	// conservative velocity stop instead, matching their existing axis-aligned path.
+	if (overlapX < overlapY) {
+		if (p.vehicle.type == VehicleType::Ship || p.vehicle.type == VehicleType::Ufo ||
+			p.vehicle.type == VehicleType::Ball || p.vehicle.type == VehicleType::Swing) {
+			p.velocity = 0;
+			return true;
+		}
+		if (p.vehicle.type == VehicleType::Wave && p.dBlock) {
+			p.velocity = 0;
+			return true;
+		}
+		p.dead = true;
+		return true;
+	}
+
+	float sign = local.y >= 0 ? 1.f : -1.f;
+	local.y = sign * (b.size.y * 0.5f + playerHalfY);
+	Vec2D resolved(
+		b.pos.x + local.x * c - local.y * s,
+		b.pos.y + local.x * s + local.y * c
+	);
+
+	// Surface normal in world coordinates. A face opposing gravity is a floor,
+	// while the other face is a ceiling/head collision.
+	Vec2D normal(-sign * s, sign * c);
+	float gravityDown = p.upsideDown ? 1.f : -1.f;
+	bool floorFace = normal.y * gravityDown < 0;
+
+	if (floorFace) {
+		p.pos = resolved;
+		p.velocity = 0;
+		p.grounded = true;
+		return true;
+	}
+
+	if (p.hBlock) {
+		p.pos = resolved;
+		p.velocity = 0;
+		return true;
+	}
+	if (p.fBlock && (p.vehicle.type == VehicleType::Cube || p.vehicle.type == VehicleType::Robot || p.vehicle.type == VehicleType::Spider)) {
+		p.pos = resolved;
+		p.upsideDown = !p.upsideDown;
+		p.velocity = 0;
+		p.gravityPortal = true;
+		return true;
+	}
+
+	if (p.vehicle.type == VehicleType::Ship || p.vehicle.type == VehicleType::Ufo ||
+		p.vehicle.type == VehicleType::Ball || p.vehicle.type == VehicleType::Swing) {
+		p.pos = resolved;
+		p.velocity = 0;
+		return true;
+	}
+
+	p.dead = true;
+	return true;
+}
+
+void Block::collide(Player& p) const {
+	if (!isCardinal(*this)) {
+		collideRotated(*this, p);
+		return;
+	}
+
+	int clip = (p.vehicle.type == VehicleType::Ufo || p.vehicle.type == VehicleType::Ship || p.vehicle.type == VehicleType::Swing) ? 7 : 10;
+
 	if (p.upsideDown != p.prevPlayer().upsideDown && !p.gravityPortal)
 		return;
 
-	/*
-		Going from slope to block means you have to check the bottom of the player
-		adjusted for the angle of the slope
-	*/
 	double bottom = p.gravBottom(p);
 	if (p.slopeData.slope) {
 		if (p.slopeData.slope->angle() > 0) {
 			bottom = bottom + sin(p.slopeData.slope->angle()) * p.size.y / 2;
 			clip = 7;
-
-			// Prevent block from catching on slope when it shouldn't
-			// TODO this should probably go somewhere else...
-			if (p.gravTop(*this) - bottom < 2) {
+			if (p.gravTop(*this) - bottom < 2)
 				return;
-			}
 		}
 	}
 
 	for (auto& entity : p.potentialSlopes) {
 		auto block_comp = entity->orientation < 2 ? getTop() : getBottom();
 		auto slope_comp = entity->orientation < 2 ? entity->getBottom() : entity->getTop();
-
-		if (block_comp - slope_comp < 2) {
+		if (block_comp - slope_comp < 2)
 			return;
-		}
 	}
 
 	bool padHitBefore = (!p.prevPlayer().grounded && p.prevPlayer().velocity <= 0 && p.velocity > 0);
 
 	if (p.innerHitbox().intersects(*this)) {
-		// Hitting block head-on
+		if (p.vehicle.type == VehicleType::Wave && p.dBlock) {
+			p.velocity = 0;
+			return;
+		}
+
+		if (p.hBlock) {
+			p.velocity = 0;
+			return;
+		}
+
+		if (p.fBlock && (p.vehicle.type == VehicleType::Cube || p.vehicle.type == VehicleType::Robot || p.vehicle.type == VehicleType::Spider)) {
+			p.upsideDown = !p.upsideDown;
+			p.velocity = 0;
+			p.gravityPortal = true;
+			return;
+		}
+
 		p.dead = true;
-	} else if (p.vehicle.type != VehicleType::Wave && p.gravTop(*this) - bottom <= clip && (padHitBefore || p.velocity <= 0 || p.gravityPortal)) {
+	} else if ((p.vehicle.type != VehicleType::Wave || p.dBlock) && p.gravTop(*this) - bottom <= clip && (padHitBefore || p.velocity <= 0 || p.gravityPortal)) {
 		p.pos.y = p.grav(p.gravTop(*this)) + p.grav(p.size.y / 2);
 
-		// When hitting pads, the next frame will cause the player ot slightly dip into the block
 		if (!padHitBefore)
 			p.grounded = true;
 
-		// If on a downhill slope and hits a block, the player is no longer on that slope.
-		if (p.slopeData.slope && p.slopeData.slope->angle() < 0) {
+		if (p.slopeData.slope && p.slopeData.slope->angle() < 0)
 			p.slopeData.slope = {};
-		}
 
-		// X-snapping
-		if (p.vehicle.type == VehicleType::Cube) {
-			if (!p.prevPlayer().grounded) {
-				if (p.snapData.playerFrame > 0 && p.snapData.playerFrame + 1 < p.frame)
-					trySnap(*this, p);
-			}
+		if (p.vehicle.type == VehicleType::Cube || p.vehicle.type == VehicleType::Robot) {
+			if (!p.prevPlayer().grounded && p.snapData.playerFrame > 0 && p.snapData.playerFrame + 1 < p.frame)
+				trySnap(*this, p);
 
 			p.snapData.playerFrame = p.level->currentFrame();
 			p.snapData.object = *this;
 		}
 	} else {
-		// Ship and ufo can hit the ceiling of a block without dying
-		if (p.vehicle.type == VehicleType::Ship || p.vehicle.type == VehicleType::Ufo || p.vehicle.type == VehicleType::Ball) {
+		if (p.vehicle.type == VehicleType::Ship || p.vehicle.type == VehicleType::Ufo ||
+			p.vehicle.type == VehicleType::Ball || p.vehicle.type == VehicleType::Swing) {
 			if (p.gravTop(p) - p.gravBottom(*this) <= clip - 1 && p.velocity > 0) {
 				p.pos.y = p.grav(p.gravBottom(*this)) - p.grav(p.size.y / 2);
 				p.velocity = 0;
