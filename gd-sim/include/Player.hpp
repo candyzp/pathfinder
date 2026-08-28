@@ -72,6 +72,7 @@ struct Player : public Entity {
 	int frame;
 
 	bool dead;
+	bool completed;
 	bool grounded;
 	bool velocityOverride;
 	bool button, input;
