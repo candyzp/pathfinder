@@ -90,6 +90,7 @@ std::optional<ObjectContainer> Object::create(std::unordered_map<int, std::strin
 	objs(({ 178 }), Hazard, 6, 6.4)
 	objs(({ 919 }), Hazard, 25, 6)
 	objs(({ 179 }), Hazard, 4, 8)
+	objs(({ 3610 }), Hazard, 30, 30)
 
 	objs(({ 88, 186, 740, 1705 }), Sawblade, 32.3, 32.3)
 	objs(({ 89, 1706 }), Sawblade, 21.6, 21.6)
@@ -114,6 +115,7 @@ std::optional<ObjectContainer> Object::create(std::unordered_map<int, std::strin
 	objs(({ 1620 }), Sawblade, 15, 15)
 	objs(({ 1707 }), Sawblade, 12, 12)
 	objs(({ {1701, 1703} }), Sawblade, 6, 6)
+	objs(({ 3611 }), Sawblade, 15, 15)
 
 	objs(({ 35, 67, 140, 1332, 3005 }), Pad, 25, 6)
 	objs(({ 36, 84, 141, 1022, 1330, 1333, 1704, 1751, 3004, 3027 }), Orb, 36, 36)
