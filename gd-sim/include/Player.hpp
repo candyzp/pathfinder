@@ -7,6 +7,7 @@
 #include <vector>
 #include <functional>
 #include <optional>
+#include <algorithm>
 
 /// Player X velocity per speed
 inline double player_speeds[5] = {
