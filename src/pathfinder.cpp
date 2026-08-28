@@ -512,11 +512,8 @@ static CandidateResult searchBestInputs(
 
     // Easy ground sections can take the fast path. Flying modes always inspect
     // alternative trajectories so "hold forever" cannot win by default.
-    if (!continuousMode(p1Type) &&
-        probe.trial.survivedHorizon &&
-        probe.trial.clearance > 24.f) {
+    if (!continuousMode(p1Type) && probe.trial.survivedHorizon)
         return probe;
-    }
 
     std::vector<InputSet> seeds;
 
