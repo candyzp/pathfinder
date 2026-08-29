@@ -9,7 +9,7 @@ project(pathfinder VERSION 1.0.0)
 add_library(${PROJECT_NAME} SHARED
     src/main.cpp
     src/creator.cpp
-    src/pathfinder_state_v9.cpp
+    src/pathfinder_state_v10.cpp
     src/solver_dashboard.cpp
     src/flappy.cpp
     src/checker.cpp
@@ -17,12 +17,12 @@ add_library(${PROJECT_NAME} SHARED
     # Add any extra C++ source files here
 )
 
-# V9 separates speculative X from verified-safe progress. Repeated deaths create
-# a poisoned basin and force progressively deeper rollback until a living route
-# genuinely escapes past the old death zone.
+# V10 gives all 100 logical helpers one owned job per generation (10 squads of
+# 10) and keeps rollback anchors separate from earned forward progress. A
+# repeated death wall can only deepen recovery until a living route escapes it.
 set_source_files_properties(
     src/main.cpp
-    PROPERTIES COMPILE_DEFINITIONS "pathfind=pathfind_v9"
+    PROPERTIES COMPILE_DEFINITIONS "pathfind=pathfind_v10"
 )
 
 if (NOT DEFINED ENV{GEODE_SDK})
