@@ -9,19 +9,19 @@ project(pathfinder VERSION 1.0.0)
 add_library(${PROJECT_NAME} SHARED
     src/main.cpp
     src/creator.cpp
-    src/pathfinder_state_v7.cpp
+    src/pathfinder_state_v8.cpp
+    src/solver_dashboard.cpp
     src/flappy.cpp
     src/checker.cpp
     src/debug.cpp
     # Add any extra C++ source files here
 )
 
-# V7 replaces the old candidate-script/champion controller with a state-space
-# beam search. The UI still calls pathfind through the public header; only main.cpp
-# is remapped to the new controller symbol.
+# V8 keeps the state-space architecture, adds explicit failure memory,
+# local stall rescue, independent explorers, and a live brain dashboard.
 set_source_files_properties(
     src/main.cpp
-    PROPERTIES COMPILE_DEFINITIONS "pathfind=pathfind_v7"
+    PROPERTIES COMPILE_DEFINITIONS "pathfind=pathfind_v8"
 )
 
 if (NOT DEFINED ENV{GEODE_SDK})
