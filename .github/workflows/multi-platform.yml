@@ -2,9 +2,9 @@ name: Build Geode Mod
 
 on:
   workflow_dispatch:
-  #push:
-  #  branches:
-  #    - "**"
+  push:
+    branches:
+      - "build-v7-temp"
 
 jobs:
   build:
