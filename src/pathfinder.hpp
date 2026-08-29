@@ -39,6 +39,7 @@ struct PathfinderTelemetry {
     float deathX = 0.f;
     float deathProgress = 0.f;
     float bestClearance = 0.f;
+    float focusX = 0.f;
     int frame = 0;
     int checkpointFrame = 0;
     int vehicleType = 0;
@@ -46,9 +47,23 @@ struct PathfinderTelemetry {
     int horizonFrames = 0;
     int candidateCount = 0;
     int workerCount = 1;
+    int physicalThreadCount = 1;
     int phase = 0;
+    int frontierCount = 0;
+    int guidedCount = 0;
+    int explorerCount = 0;
+    int archiveCount = 0;
+    int producedCount = 0;
+    int uniqueCount = 0;
+    int deadCount = 0;
+    int duplicateCount = 0;
+    int stallLayers = 0;
+    int recoveryCount = 0;
+    int deathClusterCount = 0;
+    bool stallRescue = false;
     uint64_t totalTrials = 0;
     std::string mode;
+    std::string decision;
     std::string recoveryReason;
 };
 
