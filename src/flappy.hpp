@@ -1,5 +1,7 @@
 #pragma once
 
+namespace cocos2d {
 class CCNode;
+}
 
-void togglePathfinderFlappy(CCNode* parent);
+void togglePathfinderFlappy(cocos2d::CCNode* parent);
