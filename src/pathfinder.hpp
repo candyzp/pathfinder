@@ -10,6 +10,7 @@ struct PathfinderInput {
     uint32_t frame = 0;
     bool player2 = false;
     bool down = false;
+    uint8_t button = 1;
 };
 
 struct PathfinderResult {
