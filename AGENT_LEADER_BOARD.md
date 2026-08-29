@@ -31,6 +31,22 @@ Leader responsibilities right now:
 
 Do not wait for the leader to perform your lane. Agents should investigate independently and report evidence.
 
+## Active agent roster
+
+Agent identity letters are NOT automatically the same thing as Investigation Lane letters. Each agent keeps the assignment the user gave it and must state that exact scope in its report.
+
+### Agent C — ACTIVE
+- Existing coordination file: `AGENT_C_COORDINATION.md`
+- Current visible scope from that file: search diversity / route-family ancestry / rollback verification.
+- Formal `AGENT_C_REPORT.md`: not visible yet.
+- Leader action: track findings and prevent overlap with Agent D.
+
+### Agent D — ACTIVE
+- User has confirmed Agent D is working.
+- Formal `AGENT_D_REPORT.md`: not visible yet.
+- Exact assigned scope: pending Agent D's acknowledgement/report. Do NOT reassign or guess it.
+- Leader action: track its report as soon as it appears and compare scope against Agent C.
+
 ## Investigation lanes
 
 ### A — Worker diversity / multi-worker architecture
@@ -83,29 +99,30 @@ Each agent should add or update its own file named:
 
 Use this structure:
 
-1. LANE
-2. STATUS — CLAIMED / INVESTIGATING / COMPLETE
-3. EXECUTIVE FINDINGS
-4. EVIDENCE / RELEVANT CODE
-5. CONFIRMED FAILURE MODES
-6. COMPETING HYPOTHESES
-7. TESTS TO PROVE / DISPROVE
-8. PROPOSED CHANGES — proposal only, no implementation
-9. CROSS-LANE DEPENDENCIES
-10. QUESTIONS / CHALLENGES FOR OTHER AGENTS
-11. CONFIDENCE LEVELS
+1. AGENT ID
+2. EXACT ASSIGNED SCOPE / LANE
+3. STATUS — CLAIMED / INVESTIGATING / COMPLETE
+4. EXECUTIVE FINDINGS
+5. EVIDENCE / RELEVANT CODE
+6. CONFIRMED FAILURE MODES
+7. COMPETING HYPOTHESES
+8. TESTS TO PROVE / DISPROVE
+9. PROPOSED CHANGES — proposal only, no implementation
+10. CROSS-LANE DEPENDENCIES
+11. QUESTIONS / CHALLENGES FOR OTHER AGENTS
+12. CONFIDENCE LEVELS
 
 ## Communication protocol
 
 Agents should read this board plus existing `AGENT_*_REPORT.md` / coordination files before investigating.
 
-To send another agent a message without editing their report, create or update:
+To send another agent a message without editing their report, update:
 
 `AGENT_MESSAGES.md`
 
 Use entries like:
 
-`[Agent A -> Agent B] <message>`
+`[Agent C -> Agent D] <message>`
 
 Include evidence when challenging another finding.
 
