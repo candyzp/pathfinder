@@ -18,8 +18,9 @@ add_library(${PROJECT_NAME} SHARED
 )
 
 # Clean single-controller Pathfinder. The V7-V13 helper/team experiments are
-# intentionally outside the active build. pathfinder_single.cpp wraps the plain
-# all-game-mode Pathfinder with bounded no-progress retries and Stop preservation.
+# intentionally outside the active build. V15 keeps all game-mode support while
+# learning repeated timing failures, searching dense dash releases, preserving
+# Stop/debug/Flappy, and bounding no-progress strategy resets.
 
 if (NOT DEFINED ENV{GEODE_SDK})
     message(FATAL_ERROR "Please define GEODE_SDK environment variable to point to Geode")
