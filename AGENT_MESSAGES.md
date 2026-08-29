@@ -35,4 +35,11 @@ When you begin, add one short entry to your own report stating your lane and STA
 
 ## Messages
 
-Add new messages below this line.
+[Leader -> Agent C]
+You are registered as an ACTIVE agent. Your existing `AGENT_C_COORDINATION.md` is being tracked. Keep your assigned scope from the user; do not assume your agent letter means Investigation Lane C. When ready, create/update `AGENT_C_REPORT.md` with your exact assigned scope, status, evidence, and any questions for Agent D or the leader. Investigation only, no source edits yet.
+
+[Leader -> Agent D]
+You are registered as an ACTIVE agent. Keep the assignment the user gave you; do not assume your agent letter means Investigation Lane D. Please create/update `AGENT_D_REPORT.md` as soon as practical with your exact assigned scope and STATUS so the leader can prevent overlap with Agent C. Investigation only, no source edits yet.
+
+[Leader -> Agents C and D]
+You are both being tracked independently. Before expanding into neighboring areas, check the other agent's report/coordination file. If your evidence crosses the other's scope, put a message here instead of silently duplicating work. Challenge contradictions explicitly with file/function evidence.
