@@ -9,6 +9,7 @@
 #include <Geode/modify/PlayLayer.hpp>
 #include <UIBuilder.hpp>
 #include "pathfinder.hpp"
+#include "flappy.hpp"
 
 #include <algorithm>
 #include <array>
@@ -226,6 +227,10 @@ public:
     void finalize(PathfinderResult result) {
         if (auto* stop = getChildByIDRecursive("stop"))
             stop->setVisible(false);
+        if (auto* waitMenu = getChildByID("pathfinder-wait-menu"))
+            waitMenu->setVisible(false);
+        if (auto* game = getChildByID("pathfinder-flappy-game"))
+            game->removeFromParentAndCleanup(true);
 
         auto* percent = typeinfo_cast<CCLabelBMFont*>(getChildByIDRecursive("percent"));
         if (percent) {
@@ -392,6 +397,22 @@ public:
                 .move(-135, 77)
                 .scale(0.8f)
         );
+
+        auto win = CCDirector::sharedDirector()->getWinSize();
+        auto* waitMenu = CCMenu::create();
+        waitMenu->setID("pathfinder-wait-menu");
+        waitMenu->setPosition({
+            std::min(win.width - 55.f, win.width / 2.f + 178.f),
+            win.height / 2.f + 88.f
+        });
+        addChild(waitMenu, 220);
+
+        Build<ButtonSprite>::create("Flappy", "bigFont.fnt", "GJ_button_01.png")
+            .scale(0.48f)
+            .intoMenuItem([this](CCMenuItemSpriteExtra*) {
+                togglePathfinderFlappy(this);
+            })
+            .parent(waitMenu);
 
         return true;
     }
