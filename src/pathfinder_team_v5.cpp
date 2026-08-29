@@ -1,4 +1,4 @@
-#include "pathfinder_team_v4.cpp"
+#include "pathfinder_team_v6_core.cpp"
 
 namespace {
 
@@ -118,8 +118,8 @@ PathfinderResult pathfind_v5(
     std::function<void(PathfinderTelemetry const&)> callback,
     float trustedEndX
 ) {
-    // Do not expose an unvalidated 100% to the UI. v4 can believe a worker reached
-    // completion before we know that the final exported replay reproduces it.
+    // Do not expose an unvalidated 100% to the UI. The v6 search core can believe
+    // a worker reached completion before the final exported replay reproduces it.
     std::function<void(PathfinderTelemetry const&)> guardedCallback;
     if (callback) {
         guardedCallback = [callback](PathfinderTelemetry const& incoming) {
@@ -133,7 +133,7 @@ PathfinderResult pathfind_v5(
         };
     }
 
-    PathfinderResult result = pathfind_v4(
+    PathfinderResult result = pathfind_v6_core(
         lvlString,
         stop,
         guardedCallback,
