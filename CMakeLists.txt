@@ -9,7 +9,7 @@ project(pathfinder VERSION 1.0.0)
 add_library(${PROJECT_NAME} SHARED
     src/main.cpp
     src/creator.cpp
-    src/pathfinder_single.cpp
+    src/pathfinder_universal.cpp
     src/real_geometry.cpp
     src/solver_dashboard.cpp
     src/flappy.cpp
@@ -18,10 +18,12 @@ add_library(${PROJECT_NAME} SHARED
     # Add any extra C++ source files here
 )
 
-# Clean single-controller Pathfinder. The V7-V13 helper/team experiments are
-# intentionally outside the active build. V16 keeps the V15 learning controller
-# and adds a Show-Hitbox-style real Geometry Dash collision snapshot for the
-# frame-exact Wave trajectory planner.
+# V17 universal frame-exact MPC. Cube, Ship, Ball, UFO, Wave, Robot, Spider,
+# Swing, and dual mode all use the same state-space/receding-horizon controller.
+# Every 240-TPS decision tick branches button state, dead futures are removed,
+# near-identical physics states merge, and only a tiny safe prefix is committed.
+# The Show-Hitbox-style real GD geometry scanner remains available as a second
+# edge sensor. Old helper/team and V15/V16 controllers are outside the build.
 
 if (NOT DEFINED ENV{GEODE_SDK})
     message(FATAL_ERROR "Please define GEODE_SDK environment variable to point to Geode")
