@@ -126,24 +126,28 @@ public:
                 t.rollbackDistance,
                 t.deadEndLevel
             )
-            : "none | safe progress unlocked";
+            : t.stallRescue
+                ? "team-local recovery active | SAFE preserved"
+                : "none | safe progress unlocked";
         std::string behavior = compactTextV8(
             !t.decision.empty() ? t.decision : t.recoveryReason
         );
         std::string why = compactTextV8(t.recoveryReason);
+        std::string solverMode = compactTextV8(t.mode, 46);
 
         auto text = fmt::format(
-            "PATHFINDER BRAIN v9\n"
+            "PATHFINDER {}\n"
             "DOING  {}\n"
             "WHY    {}\n"
             "SAFE   {:.2f}% | {} | X {:.0f} | clearance {:.1f}\n"
             "SEEN   X {:.0f} | speculative lead +{:.0f}\n"
-            "POP    {} states: {} guided + {} explore | frontier {}\n"
+            "HELPERS {} | {} guided + {} explore | frontier {}\n"
             "SEARCH {} | horizon {}f / {}ms | archive {}\n"
             "DEADEND {}\n"
             "RESULT {} alive -> {} unique | {} rejected | {} dead\n"
             "STALL  {} layers | recoveries {} | {} real threads\n"
             "SPEED  {:.0f} trials/s | {} total trials",
+            solverMode,
             behavior,
             why,
             displayProgress,
