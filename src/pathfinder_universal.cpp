@@ -1,9 +1,14 @@
-// Universal Pathfinder V17: one frame-exact receding-horizon state-space solver
-// for Cube, Ship, Ball, UFO, Wave, Robot, Spider, Swing, and dual mode.
+// Universal Pathfinder V18: fast incremental frame-exact MPC for every mode.
 //
-// The old solver is included only for its Level2 simulation primitives and
-// replay helpers. V17 does not call the old structured/random pathfinder.
-#define pathfind pathfind_plain_unused_v17
+// V17 had the right state-space idea but the wrong execution model: at beam
+// depth N it copied the root Level2 and replayed N frames for every candidate.
+// That made one local plan quadratic in horizon length and copied full histories
+// tens of thousands of times before committing a few frames.
+//
+// V18 keeps one compact simulator state per surviving beam node. Each branch
+// advances exactly ONE new 1/240-second frame, near-identical physics states are
+// merged immediately, and only a short safe prefix is committed before replanning.
+#define pathfind pathfind_plain_unused_v18
 #include "pathfinder.cpp"
 #undef pathfind
 
@@ -16,36 +21,24 @@
 
 namespace {
 
-struct MpcConfigV17 {
-    int lookahead = 128;
-    int beamWidth = 256;
-    int commitFrames = 8;
+struct MpcConfigV18 {
+    int lookahead = 64;
+    int beamWidth = 48;
+    int commitFrames = 12;
     double clearanceWeight = 12.0;
-    double togglePenalty = 0.12;
+    double togglePenalty = 0.16;
 };
 
-struct MpcTrialV17 {
-    std::set<SearchInput> inputs;
-    TrialResult result;
-    float p1Y = 0.f;
-    float p1V = 0.f;
-    float p2Y = 0.f;
-    float p2V = 0.f;
-    float direction = 1.f;
-    VehicleType mode1 = VehicleType::Cube;
-    VehicleType mode2 = VehicleType::Cube;
-    bool held1 = false;
-    bool held2 = false;
-    bool upside1 = false;
-    bool upside2 = false;
-    bool dash1 = false;
-    bool dash2 = false;
-    bool dual = false;
-    int speed1 = 0;
-    int speed2 = 0;
+struct BeamNodeV18 {
+    Level2 sim;
+    std::vector<SearchInput> inputs;
+    float minClearance = std::numeric_limits<float>::infinity();
+    float deathX = 0.f;
+
+    explicit BeamNodeV18(Level2 const& source) : sim(source) {}
 };
 
-struct MpcPlanV17 {
+struct MpcPlanV18 {
     std::set<SearchInput> inputs;
     int commitFrames = 0;
     int lookaheadFrames = 0;
@@ -62,7 +55,7 @@ struct MpcPlanV17 {
     bool usedRealGeometry = false;
 };
 
-static char const* modeNameV17(VehicleType mode) {
+static char const* modeNameV18(VehicleType mode) {
     switch (mode) {
         case VehicleType::Cube: return "Cube";
         case VehicleType::Ship: return "Ship";
@@ -76,55 +69,57 @@ static char const* modeNameV17(VehicleType mode) {
     return "Unknown";
 }
 
-static MpcConfigV17 configForV17(VehicleType mode, int searchLevel, bool dual) {
-    MpcConfigV17 config;
+static MpcConfigV18 configForV18(VehicleType mode, int searchLevel, bool dual) {
+    MpcConfigV18 config;
     switch (mode) {
         case VehicleType::Cube:
-            config = {160, 240, 10, 8.0, 0.16};
+            config = {56, 48, 16, 8.0, 0.26};
             break;
         case VehicleType::Ship:
-            config = {144, 320, 6, 18.0, 0.05};
+            config = {68, 64, 12, 18.0, 0.07};
             break;
         case VehicleType::Ball:
-            config = {160, 256, 8, 10.0, 0.10};
+            config = {64, 52, 14, 10.0, 0.14};
             break;
         case VehicleType::Ufo:
-            config = {152, 288, 6, 14.0, 0.08};
+            config = {64, 56, 12, 14.0, 0.11};
             break;
         case VehicleType::Wave:
-            config = {168, 384, 6, 22.0, 0.035};
+            config = {76, 80, 10, 22.0, 0.045};
             break;
         case VehicleType::Robot:
-            config = {176, 288, 8, 10.0, 0.12};
+            config = {72, 60, 14, 10.0, 0.16};
             break;
         case VehicleType::Spider:
-            config = {160, 256, 6, 12.0, 0.07};
+            config = {64, 52, 12, 12.0, 0.10};
             break;
         case VehicleType::Swing:
-            config = {160, 336, 6, 18.0, 0.05};
+            config = {72, 68, 10, 18.0, 0.07};
             break;
     }
 
-    config.lookahead = std::min(240, config.lookahead + searchLevel * 8);
-    config.beamWidth = std::min(512, config.beamWidth + searchLevel * 24);
+    // Recovery increases precision/capacity gradually instead of starting every
+    // trivial section with the largest possible search.
+    config.lookahead = std::min(112, config.lookahead + searchLevel * 4);
+    config.beamWidth = std::min(128, config.beamWidth + searchLevel * 6);
 
-    // Four branches per tick in dual mode instead of two. Keep the search large,
-    // but cap it enough that one plan cannot allocate the entire phone.
+    // Dual has four actions per tick. Keep it bounded while still searching both
+    // players independently on every simulated frame.
     if (dual) {
-        config.lookahead = std::min(config.lookahead, 144);
-        config.beamWidth = std::min(config.beamWidth, 288);
-        config.commitFrames = std::min(config.commitFrames, 6);
+        config.lookahead = std::min(config.lookahead, 76);
+        config.beamWidth = std::min(config.beamWidth, 72);
+        config.commitFrames = std::min(config.commitFrames, 8);
     }
     return config;
 }
 
-static bool flightLikeV17(VehicleType mode) {
+static bool flightLikeV18(VehicleType mode) {
     return mode == VehicleType::Ship ||
            mode == VehicleType::Wave ||
            mode == VehicleType::Swing;
 }
 
-static float realGeometryClearanceV17(
+static float realGeometryClearanceV18(
     std::shared_ptr<PathfinderRealGeometry const> const& geometry,
     Player const& player
 ) {
@@ -140,247 +135,186 @@ static float realGeometryClearanceV17(
     );
 }
 
-static MpcTrialV17 evaluateMpcCandidateV17(
-    Level2 const& base,
-    std::set<SearchInput> const& inputs,
-    int depthFrames,
+// Branch Level2 copies do not need the entire route history. Player::postCollision
+// only needs frame-1, and Level::getState supports a vector whose first element is
+// an arbitrary frame. Keeping two states makes every later branch copy roughly
+// constant-size with respect to elapsed level time.
+//
+// Do NOT call Level2::fixStatePointers here. That routine rebuilds move-trigger
+// activation history from gameStates, which we intentionally compact. The copied
+// moveTriggers already contain their live activationFrame values.
+static void compactBranchHistoryV18(Level2& lvl) {
+    auto trim = [](std::vector<Player>& states) {
+        if (states.size() > 2)
+            states.erase(states.begin(), states.end() - 2);
+    };
+    trim(lvl.gameStates);
+    trim(lvl.gameStates2);
+
+    for (auto& state : lvl.gameStates)
+        state.level = &lvl;
+    for (auto& state : lvl.gameStates2)
+        state.level = &lvl;
+}
+
+static float sampleClearanceV18(
+    Level2 const& lvl,
     std::shared_ptr<PathfinderRealGeometry const> const& geometry
 ) {
-    Level2 worker = base;
-    worker.fixStatePointers();
+    auto const& p1 = lvl.latestState();
+    float clearance = hazardClearance(lvl, p1);
 
-    int startFrame = worker.currentFrame();
-    int endFrame = startFrame + depthFrames;
-    float minClearance = std::numeric_limits<float>::infinity();
-    float deathX = 0.f;
+    // Real GD solid overlap can be a legal landing for grounded modes. Use the
+    // Show-Hitbox snapshot as an extra edge-distance oracle for flight-like modes
+    // and let gd-sim remain the source of truth for grounded contact legality.
+    if (geometry && flightLikeV18(p1.vehicle.type))
+        clearance = std::min(clearance, realGeometryClearanceV18(geometry, p1));
 
-    while (
-        worker.currentFrame() < endFrame &&
-        !worker.latestState().dead &&
-        !reachedGoal(worker)
-    ) {
-        uint32_t current = static_cast<uint32_t>(worker.currentFrame());
-        if (inputs.contains(inputKey(current, false)))
-            worker.press1 = !worker.press1;
-        if (inputs.contains(inputKey(current, true)))
-            worker.press2 = !worker.press2;
-
-        worker.runFrame(worker.press1, worker.press2, 1.f / 240.f);
-        auto const& p1 = worker.latestState();
-        if (p1.dead) {
-            deathX = p1.pos.x;
-            break;
-        }
-
-        // Expensive on purpose: sample clearance on every single 240-TPS tick.
-        float frameClearance = hazardClearance(worker, p1);
-
-        // The real Show-Hitbox-style geometry is safest as a second edge sensor.
-        // For grounded modes a solid overlap can be a legal floor contact, so
-        // real geometry influences scoring most strongly for flight-like modes;
-        // gd-sim remains the authoritative death/contact simulation for all modes.
-        if (geometry && flightLikeV17(p1.vehicle.type)) {
-            float real = realGeometryClearanceV17(geometry, p1);
-            frameClearance = std::min(frameClearance, real);
-        }
-
-        if (p1.dualActive) {
-            auto const& p2 = worker.latestState2();
-            if (p2.dead) {
-                deathX = std::max(p1.pos.x, p2.pos.x);
-                break;
-            }
-            frameClearance = std::min(frameClearance, hazardClearance(worker, p2));
-            if (geometry && flightLikeV17(p2.vehicle.type)) {
-                float real2 = realGeometryClearanceV17(geometry, p2);
-                frameClearance = std::min(frameClearance, real2);
-            }
-        }
-
-        minClearance = std::min(minClearance, frameClearance);
-
-        float y = p1.pos.y;
-        if (y > std::max(1500.f, worker.highestY + 700.f) || y < -700.f) {
-            deathX = p1.pos.x;
-            break;
-        }
+    if (p1.dualActive) {
+        auto const& p2 = lvl.latestState2();
+        clearance = std::min(clearance, hazardClearance(lvl, p2));
+        if (geometry && flightLikeV18(p2.vehicle.type))
+            clearance = std::min(clearance, realGeometryClearanceV18(geometry, p2));
     }
-
-    auto const& p1 = worker.latestState();
-    bool outOfBounds =
-        p1.pos.y > std::max(1500.f, worker.highestY + 700.f) ||
-        p1.pos.y < -700.f;
-    bool p2Dead = p1.dualActive && worker.latestState2().dead;
-    bool dead = p1.dead || p2Dead || outOfBounds;
-
-    if (!std::isfinite(minClearance))
-        minClearance = 10000.f;
-
-    MpcTrialV17 out;
-    out.inputs = inputs;
-    out.result = {
-        worker.currentFrame(),
-        p1.pos.x,
-        dead ? (deathX != 0.f ? deathX : p1.pos.x) : 0.f,
-        minClearance,
-        dead,
-        !dead && reachedGoal(worker)
-    };
-    out.p1Y = p1.pos.y;
-    out.p1V = static_cast<float>(p1.velocity);
-    out.direction = static_cast<float>(p1.direction);
-    out.mode1 = p1.vehicle.type;
-    out.held1 = worker.press1;
-    out.upside1 = p1.upsideDown;
-    out.dash1 = p1.dashing;
-    out.dual = p1.dualActive;
-    out.speed1 = p1.speed;
-
-    if (out.dual) {
-        auto const& p2 = worker.latestState2();
-        out.p2Y = p2.pos.y;
-        out.p2V = static_cast<float>(p2.velocity);
-        out.mode2 = p2.vehicle.type;
-        out.held2 = worker.press2;
-        out.upside2 = p2.upsideDown;
-        out.dash2 = p2.dashing;
-        out.speed2 = p2.speed;
-    }
-    return out;
+    return clearance;
 }
 
-static int mpcWorkerCountV17(size_t count) {
-    if (count <= 1)
-        return 1;
-    constexpr size_t kMaxWorkers = 24;
-    return static_cast<int>(std::min(count, kMaxWorkers));
+static bool outOfBoundsV18(Player const& player, float highestY) {
+    return player.pos.y > std::max(1500.f, highestY + 700.f) ||
+           player.pos.y < -700.f;
 }
 
-static std::vector<MpcTrialV17> evaluateBatchV17(
-    Level2 const& base,
-    std::vector<std::set<SearchInput>> const& candidates,
-    int depthFrames,
-    std::shared_ptr<PathfinderRealGeometry const> const& geometry,
-    std::atomic_bool& stop,
-    int& workersUsed
+static bool advanceNodeV18(
+    BeamNodeV18& node,
+    bool toggleP1,
+    bool toggleP2,
+    std::shared_ptr<PathfinderRealGeometry const> const& geometry
 ) {
-    std::vector<MpcTrialV17> results(candidates.size());
-    if (candidates.empty()) {
-        workersUsed = 1;
-        return results;
+    // A moved/copied BeamNode changes the Level2 address. Repair the retained
+    // Player::level pointers immediately before using Player::prevPlayer().
+    compactBranchHistoryV18(node.sim);
+
+    uint32_t frame = static_cast<uint32_t>(node.sim.currentFrame());
+    if (toggleP1) {
+        node.sim.press1 = !node.sim.press1;
+        node.inputs.push_back(inputKey(frame, false));
+    }
+    if (toggleP2) {
+        node.sim.press2 = !node.sim.press2;
+        node.inputs.push_back(inputKey(frame, true));
     }
 
-    workersUsed = mpcWorkerCountV17(candidates.size());
-    std::atomic<size_t> next {0};
-    std::vector<std::thread> threads;
-    threads.reserve(static_cast<size_t>(workersUsed));
+    node.sim.runFrame(node.sim.press1, node.sim.press2, 1.f / 240.f);
+    ++node.sim.latestState().frame;
+    --node.sim.latestState().frame;
 
-    for (int workerIndex = 0; workerIndex < workersUsed; ++workerIndex) {
-        threads.emplace_back([&] {
-            while (!stop.load()) {
-                size_t index = next.fetch_add(1, std::memory_order_relaxed);
-                if (index >= candidates.size())
-                    break;
-                results[index] = evaluateMpcCandidateV17(
-                    base,
-                    candidates[index],
-                    depthFrames,
-                    geometry
-                );
-            }
-        });
+    auto const& p1 = node.sim.latestState();
+    bool dead = p1.dead || outOfBoundsV18(p1, node.sim.highestY);
+    if (p1.dualActive) {
+        auto const& p2 = node.sim.latestState2();
+        dead = dead || p2.dead || outOfBoundsV18(p2, node.sim.highestY);
     }
 
-    for (auto& thread : threads)
-        thread.join();
-    return results;
+    if (dead) {
+        node.deathX = p1.pos.x;
+        return false;
+    }
+
+    float clearance = sampleClearanceV18(node.sim, geometry);
+    node.minClearance = std::min(node.minClearance, clearance);
+    compactBranchHistoryV18(node.sim);
+    return true;
 }
 
-static uint64_t mixStateV17(uint64_t h, uint64_t v) {
+static uint64_t mixStateV18(uint64_t h, uint64_t v) {
     h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
     return h * 1099511628211ull;
 }
 
-static uint64_t stateKeyV17(MpcTrialV17 const& trial) {
-    int qX = static_cast<int>(std::llround(trial.result.x * 0.5f));
-    int qY1 = static_cast<int>(std::llround(trial.p1Y * 2.f));
-    int qV1 = static_cast<int>(std::llround(trial.p1V * 4.f));
-    int qY2 = static_cast<int>(std::llround(trial.p2Y * 2.f));
-    int qV2 = static_cast<int>(std::llround(trial.p2V * 4.f));
+static uint64_t addPlayerStateV18(uint64_t h, Player const& p, bool held) {
+    int qX = static_cast<int>(std::llround(p.pos.x * 0.5f));
+    int qY = static_cast<int>(std::llround(p.pos.y * 2.f));
+    int qV = static_cast<int>(std::llround(p.velocity * 4.f));
+    int qRobot = static_cast<int>(std::llround(p.robotBoostTime * 240.0));
+    int qWarp = static_cast<int>(std::llround(p.timeWarp * 32.f));
+    int qGravity = static_cast<int>(std::llround(p.gravityScale * 32.f));
+    uint32_t coyote = std::min<unsigned int>(p.coyoteFrames, 255u);
 
-    uint64_t h = 1469598103934665603ull;
-    h = mixStateV17(h, static_cast<uint32_t>(qX));
-    h = mixStateV17(h, static_cast<uint32_t>(qY1));
-    h = mixStateV17(h, static_cast<uint32_t>(qV1));
-    h = mixStateV17(h, static_cast<uint32_t>(static_cast<int>(trial.mode1) + 1));
-    h = mixStateV17(h, static_cast<uint32_t>(trial.speed1 + 8));
-    h = mixStateV17(h, trial.held1 ? 1u : 0u);
-    h = mixStateV17(h, trial.upside1 ? 2u : 0u);
-    h = mixStateV17(h, trial.dash1 ? 4u : 0u);
-    h = mixStateV17(h, trial.direction < 0.f ? 8u : 0u);
-    h = mixStateV17(h, trial.dual ? 16u : 0u);
-
-    if (trial.dual) {
-        h = mixStateV17(h, static_cast<uint32_t>(qY2));
-        h = mixStateV17(h, static_cast<uint32_t>(qV2));
-        h = mixStateV17(h, static_cast<uint32_t>(static_cast<int>(trial.mode2) + 1));
-        h = mixStateV17(h, static_cast<uint32_t>(trial.speed2 + 8));
-        h = mixStateV17(h, trial.held2 ? 32u : 0u);
-        h = mixStateV17(h, trial.upside2 ? 64u : 0u);
-        h = mixStateV17(h, trial.dash2 ? 128u : 0u);
-    }
+    h = mixStateV18(h, static_cast<uint32_t>(qX));
+    h = mixStateV18(h, static_cast<uint32_t>(qY));
+    h = mixStateV18(h, static_cast<uint32_t>(qV));
+    h = mixStateV18(h, static_cast<uint32_t>(static_cast<int>(p.vehicle.type) + 1));
+    h = mixStateV18(h, static_cast<uint32_t>(p.speed + 8));
+    h = mixStateV18(h, static_cast<uint32_t>(qRobot));
+    h = mixStateV18(h, static_cast<uint32_t>(qWarp));
+    h = mixStateV18(h, static_cast<uint32_t>(qGravity));
+    h = mixStateV18(h, coyote);
+    h = mixStateV18(h, held ? 1u : 0u);
+    h = mixStateV18(h, p.input ? 2u : 0u);
+    h = mixStateV18(h, p.buffer ? 4u : 0u);
+    h = mixStateV18(h, p.vehicleBuffer ? 8u : 0u);
+    h = mixStateV18(h, p.grounded ? 16u : 0u);
+    h = mixStateV18(h, p.upsideDown ? 32u : 0u);
+    h = mixStateV18(h, p.dashing ? 64u : 0u);
+    h = mixStateV18(h, p.small ? 128u : 0u);
+    h = mixStateV18(h, p.direction < 0 ? 256u : 0u);
+    h = mixStateV18(h, p.dualActive ? 512u : 0u);
     return h;
 }
 
-static double scoreV17(MpcTrialV17 const& trial, MpcConfigV17 const& config) {
-    if (trial.result.complete)
+static uint64_t stateKeyV18(BeamNodeV18 const& node) {
+    auto const& p1 = node.sim.latestState();
+    uint64_t h = 1469598103934665603ull;
+    h = addPlayerStateV18(h, p1, node.sim.press1);
+    if (p1.dualActive)
+        h = addPlayerStateV18(h, node.sim.latestState2(), node.sim.press2);
+    return h;
+}
+
+static double scoreV18(BeamNodeV18 const& node, MpcConfigV18 const& config) {
+    auto const& p1 = node.sim.latestState();
+    if (reachedGoal(node.sim))
         return 1e15;
-    if (trial.result.dead)
-        return -1e12 + static_cast<double>(trial.result.frame);
 
     double clearance = std::clamp(
-        static_cast<double>(trial.result.minClearance),
+        static_cast<double>(node.minClearance),
         0.0,
         80.0
     );
-    double directionalX = trial.direction < 0.f
-        ? -static_cast<double>(trial.result.x)
-        : static_cast<double>(trial.result.x);
+    double directionalX = p1.direction < 0
+        ? -static_cast<double>(p1.pos.x)
+        : static_cast<double>(p1.pos.x);
 
-    // Progress, survival clearance and state simplicity. We intentionally keep
-    // toggle penalty small for edge-trigger modes (UFO/Ball/Spider) via config.
     return directionalX * 5.0 +
            clearance * config.clearanceWeight +
-           static_cast<double>(trial.result.frame) * 0.04 -
-           static_cast<double>(trial.inputs.size()) * config.togglePenalty;
+           static_cast<double>(node.sim.currentFrame()) * 0.04 -
+           static_cast<double>(node.inputs.size()) * config.togglePenalty;
 }
 
-static bool betterV17(
-    MpcTrialV17 const& a,
-    MpcTrialV17 const& b,
-    MpcConfigV17 const& config
+static bool betterV18(
+    BeamNodeV18 const& a,
+    BeamNodeV18 const& b,
+    MpcConfigV18 const& config
 ) {
-    double sa = scoreV17(a, config);
-    double sb = scoreV17(b, config);
+    double sa = scoreV18(a, config);
+    double sb = scoreV18(b, config);
     if (std::abs(sa - sb) > 1e-8)
         return sa > sb;
-    if (a.result.minClearance != b.result.minClearance)
-        return a.result.minClearance > b.result.minClearance;
+    if (a.minClearance != b.minClearance)
+        return a.minClearance > b.minClearance;
     return a.inputs.size() < b.inputs.size();
 }
 
-static MpcPlanV17 planMpcV17(
+static MpcPlanV18 planMpcV18(
     Level2 const& base,
     int searchLevel,
     std::atomic_bool& stop
 ) {
-    MpcPlanV17 plan;
+    MpcPlanV18 plan;
     VehicleType startMode = base.latestState().vehicle.type;
     bool startDual = base.latestState().dualActive;
-    MpcConfigV17 config = configForV17(startMode, searchLevel, startDual);
+    MpcConfigV18 config = configForV18(startMode, searchLevel, startDual);
 
-    // Static Show-Hitbox snapshot is useful as an extra edge sensor. When the
-    // simulator knows objects are moving, do not score against a stale snapshot.
     auto geometry = base.movingObjectIDs.empty()
         ? getPathfinderRealGeometry()
         : std::shared_ptr<PathfinderRealGeometry const> {};
@@ -388,122 +322,94 @@ static MpcPlanV17 planMpcV17(
     plan.lookaheadFrames = config.lookahead;
     plan.beamWidth = config.beamWidth;
 
-    int frame = base.currentFrame();
-    std::vector<MpcTrialV17> beam;
+    int startFrame = base.currentFrame();
+    std::vector<BeamNodeV18> beam;
     beam.reserve(static_cast<size_t>(config.beamWidth));
-
-    MpcTrialV17 root;
-    root.result = {
-        frame,
-        base.latestState().pos.x,
-        0.f,
-        hazardClearance(base, base.latestState()),
-        false,
-        reachedGoal(base)
-    };
-    root.p1Y = base.latestState().pos.y;
-    root.p1V = static_cast<float>(base.latestState().velocity);
-    root.direction = static_cast<float>(base.latestState().direction);
-    root.mode1 = startMode;
-    root.held1 = base.press1;
-    root.upside1 = base.latestState().upsideDown;
-    root.dash1 = base.latestState().dashing;
-    root.dual = startDual;
-    root.speed1 = base.latestState().speed;
-    if (startDual) {
-        root.p2Y = base.latestState2().pos.y;
-        root.p2V = static_cast<float>(base.latestState2().velocity);
-        root.mode2 = base.latestState2().vehicle.type;
-        root.held2 = base.press2;
-        root.upside2 = base.latestState2().upsideDown;
-        root.dash2 = base.latestState2().dashing;
-        root.speed2 = base.latestState2().speed;
-    }
-    beam.push_back(root);
+    beam.emplace_back(base);
+    compactBranchHistoryV18(beam.back().sim);
+    beam.back().minClearance = sampleClearanceV18(beam.back().sim, geometry);
 
     float furthestDeath = 0.f;
 
     for (int depth = 1; depth <= config.lookahead && !stop.load(); ++depth) {
-        std::vector<std::set<SearchInput>> candidates;
         bool anyDual = false;
         for (auto const& node : beam)
-            anyDual = anyDual || node.dual;
-        candidates.reserve(beam.size() * (anyDual ? 4 : 2));
+            anyDual = anyDual || node.sim.latestState().dualActive;
 
-        uint32_t decisionFrame = static_cast<uint32_t>(frame + depth - 1);
-        for (auto const& node : beam) {
-            // P1 stay.
-            candidates.push_back(node.inputs);
+        std::vector<BeamNodeV18> expanded;
+        expanded.reserve(beam.size() * (anyDual ? 4 : 2));
 
-            // P1 toggle. This single binary primitive covers jump presses,
-            // releases, UFO taps, Ball flips, Spider edges, and flight steering.
-            auto p1Toggle = node.inputs;
-            p1Toggle.insert(inputKey(decisionFrame, false));
-            candidates.push_back(std::move(p1Toggle));
-
-            if (node.dual) {
-                auto p2Toggle = node.inputs;
-                p2Toggle.insert(inputKey(decisionFrame, true));
-                candidates.push_back(std::move(p2Toggle));
-
-                auto both = node.inputs;
-                both.insert(inputKey(decisionFrame, false));
-                both.insert(inputKey(decisionFrame, true));
-                candidates.push_back(std::move(both));
-            }
-        }
-
-        int workers = 1;
-        auto results = evaluateBatchV17(
-            base,
-            candidates,
-            depth,
-            geometry,
-            stop,
-            workers
-        );
-        plan.evaluatorThreads = std::max(plan.evaluatorThreads, workers);
-        plan.trials += results.size();
-        plan.produced += static_cast<int>(results.size());
-
-        std::unordered_map<uint64_t, MpcTrialV17> unique;
-        unique.reserve(results.size());
-
-        for (auto& trial : results) {
-            if (trial.result.dead) {
+        auto keepIfAlive = [&](BeamNodeV18&& child, bool t1, bool t2) {
+            ++plan.trials;
+            ++plan.produced;
+            if (advanceNodeV18(child, t1, t2, geometry)) {
+                expanded.push_back(std::move(child));
+            } else {
                 ++plan.dead;
-                furthestDeath = std::max(furthestDeath, trial.result.deathX);
-                continue;
+                furthestDeath = std::max(furthestDeath, child.deathX);
+            }
+        };
+
+        for (auto& parent : beam) {
+            if (stop.load())
+                break;
+
+            bool dual = parent.sim.latestState().dualActive;
+
+            // Copy only the alternatives. The no-toggle child reuses the parent
+            // state directly, cutting Level2 copies roughly in half for normal play.
+            BeamNodeV18 stay = std::move(parent);
+            BeamNodeV18 p1Toggle = stay;
+
+            if (dual) {
+                BeamNodeV18 p2Toggle = stay;
+                BeamNodeV18 bothToggle = stay;
+                keepIfAlive(std::move(p2Toggle), false, true);
+                keepIfAlive(std::move(bothToggle), true, true);
             }
 
-            uint64_t key = stateKeyV17(trial);
-            auto it = unique.find(key);
-            if (it == unique.end() || betterV17(trial, it->second, config))
-                unique[key] = std::move(trial);
+            keepIfAlive(std::move(p1Toggle), true, false);
+            keepIfAlive(std::move(stay), false, false);
         }
 
-        if (unique.empty()) {
+        if (expanded.empty()) {
             plan.deathX = furthestDeath;
             return plan;
         }
 
-        beam.clear();
-        beam.reserve(unique.size());
-        for (auto& [_, trial] : unique)
-            beam.push_back(std::move(trial));
-        plan.unique = static_cast<int>(beam.size());
+        // Merge equivalent physics futures immediately. We retain only the safer,
+        // simpler route to a state, not every historical input script that reached it.
+        std::unordered_map<uint64_t, size_t> chosen;
+        chosen.reserve(expanded.size());
+        std::vector<BeamNodeV18> unique;
+        unique.reserve(expanded.size());
 
-        std::sort(
-            beam.begin(),
-            beam.end(),
-            [&](MpcTrialV17 const& a, MpcTrialV17 const& b) {
-                return betterV17(a, b, config);
+        for (auto& node : expanded) {
+            uint64_t key = stateKeyV18(node);
+            auto it = chosen.find(key);
+            if (it == chosen.end()) {
+                chosen.emplace(key, unique.size());
+                unique.push_back(std::move(node));
+            } else if (betterV18(node, unique[it->second], config)) {
+                unique[it->second] = std::move(node);
             }
-        );
-        if (beam.size() > static_cast<size_t>(config.beamWidth))
-            beam.resize(static_cast<size_t>(config.beamWidth));
+        }
 
-        if (beam.front().result.complete)
+        plan.unique = static_cast<int>(unique.size());
+
+        auto better = [&](BeamNodeV18 const& a, BeamNodeV18 const& b) {
+            return betterV18(a, b, config);
+        };
+
+        if (unique.size() > static_cast<size_t>(config.beamWidth)) {
+            auto cut = unique.begin() + config.beamWidth;
+            std::nth_element(unique.begin(), cut, unique.end(), better);
+            unique.resize(static_cast<size_t>(config.beamWidth));
+        }
+        std::sort(unique.begin(), unique.end(), better);
+        beam = std::move(unique);
+
+        if (!beam.empty() && reachedGoal(beam.front().sim))
             break;
     }
 
@@ -513,12 +419,12 @@ static MpcPlanV17 planMpcV17(
     }
 
     auto const& best = beam.front();
-    plan.inputs = best.inputs;
-    plan.minClearance = best.result.minClearance;
-    plan.complete = best.result.complete;
+    plan.inputs.insert(best.inputs.begin(), best.inputs.end());
+    plan.minClearance = best.minClearance;
+    plan.complete = reachedGoal(best.sim) && !best.sim.latestState().dead;
     plan.deathX = furthestDeath;
 
-    int available = std::max(0, best.result.frame - frame);
+    int available = std::max(0, best.sim.currentFrame() - startFrame);
     plan.commitFrames = plan.complete
         ? available
         : std::min(config.commitFrames, available);
@@ -526,7 +432,7 @@ static MpcPlanV17 planMpcV17(
     return plan;
 }
 
-static bool validateResultV17(
+static bool validateResultV18(
     std::string const& lvlString,
     std::vector<PathfinderInput> const& inputs,
     float trustedEndX
@@ -554,7 +460,7 @@ static bool validateResultV17(
     return reachedGoal(verify) && !verify.latestState().dead;
 }
 
-static PathfinderResult resultFromTimelineV17(
+static PathfinderResult resultFromTimelineV18(
     Timeline const& timeline,
     std::string const& lvlString,
     float solveStartX,
@@ -608,7 +514,7 @@ static PathfinderResult resultFromTimelineV17(
 
     bool claimedComplete = timeline.complete();
     bool replayValid = !claimedComplete ||
-        validateResultV17(lvlString, result.inputs, trustedEndX);
+        validateResultV18(lvlString, result.inputs, trustedEndX);
 
     result.macro = output.exportData().unwrapOr({});
     result.complete = claimedComplete && replayValid;
@@ -621,7 +527,7 @@ static PathfinderResult resultFromTimelineV17(
 
     std::ostringstream diagnostics;
     diagnostics
-        << "solver=universal-frame-mpc-v17"
+        << "solver=universal-incremental-mpc-v18"
         << " progress=" << result.progress
         << " frame=" << timeline.frame()
         << " routeX=" << timeline.x()
@@ -659,7 +565,7 @@ PathfinderResult pathfind(
         std::isfinite(trustedEndX) && trustedEndX > solveStartX + 30.f;
     if (hasTrustedEnd) {
         lvl.length = trustedEndX;
-        lvl.lengthSource = "trusted-gd-v17";
+        lvl.lengthSource = "trusted-gd-v18";
     }
 
     Timeline bestPlayable(lvl);
@@ -713,10 +619,10 @@ PathfinderResult pathfind(
         t.deathClusterCount = sameWallRounds;
         t.stallRescue = rescue;
         t.totalTrials = totalTrials;
-        t.mode = "universal-frame-mpc-v17";
-        t.decision = std::string("Frame-exact MPC: ") +
-            modeNameV17(lvl.latestState().vehicle.type) +
-            " branches every 1/240 tick";
+        t.mode = "universal-incremental-mpc-v18";
+        t.decision = std::string("Incremental frame MPC: ") +
+            modeNameV18(lvl.latestState().vehicle.type) +
+            " searches every 1/240 tick";
         t.recoveryReason = std::move(reason);
         publishPathfinderTelemetryV8(t);
         if (callback)
@@ -737,7 +643,7 @@ PathfinderResult pathfind(
         emit(2, std::move(reason), true);
     };
 
-    emit(0, "all game modes use state-space MPC; every decision tick is searched");
+    emit(0, "V18 incremental MPC: no candidate replays from the horizon root");
 
     while (!reachedGoal(lvl) && !stop.load()) {
         try {
@@ -750,12 +656,11 @@ PathfinderResult pathfind(
             }
 
             int frame = lvl.currentFrame();
-            float beforeX = lvl.latestState().pos.x;
             int searchLevel = std::min(12, recoveryCount + sameWallRounds + stagnantPlans / 4);
             hardestSearch = std::max(hardestSearch, searchLevel);
 
-            emit(0, "expanding HOLD/RELEASE state branches for this exact frame");
-            auto plan = planMpcV17(lvl, searchLevel, stop);
+            emit(0, "advancing surviving physics states one frame instead of replaying them");
+            auto plan = planMpcV18(lvl, searchLevel, stop);
             totalTrials += plan.trials;
             debugWorkers = plan.evaluatorThreads;
             debugHorizon = plan.lookaheadFrames;
@@ -779,8 +684,8 @@ PathfinderResult pathfind(
             emit(
                 plan.found ? 1 : 2,
                 plan.usedRealGeometry
-                    ? "MPC scored every tick with gd-sim plus Show-Hitbox edge geometry"
-                    : "MPC scored every tick with gd-sim collision geometry",
+                    ? "incremental beam scored with gd-sim plus Show-Hitbox edge geometry"
+                    : "incremental beam scored with gd-sim collision geometry",
                 !plan.found
             );
 
@@ -790,7 +695,7 @@ PathfinderResult pathfind(
             if (!plan.found) {
                 recover(
                     std::min(5200, 480 + sameWallRounds * 360 + recoveryCount * 180),
-                    "beam exhausted: deeper rollback and wider next search"
+                    "beam exhausted: rollback and expand the next incremental search"
                 );
                 if (sameWallRounds >= 10 || recoveryCount >= 24) {
                     emit(2, "same wall survived bounded deep recoveries; returning best living route", true);
@@ -822,8 +727,6 @@ PathfinderResult pathfind(
                 continue;
             }
 
-            // Keep the longest living route, not only the route with the largest X.
-            // This preserves legitimate reverse-direction and portal sections.
             if (lvl.currentFrame() > bestPlayable.frame())
                 bestPlayable.capture(lvl);
 
@@ -844,7 +747,7 @@ PathfinderResult pathfind(
                     3,
                     reachedGoal(lvl)
                         ? "goal reached; preparing independent replay validation"
-                        : "safe MPC prefix committed; replanning from new exact state"
+                        : "safe prefix committed; fast incremental replanning continues"
                 );
             } else {
                 ++stagnantPlans;
@@ -877,7 +780,7 @@ PathfinderResult pathfind(
         emit(4, "validating final input stream from level start");
     }
 
-    return resultFromTimelineV17(
+    return resultFromTimelineV18(
         bestPlayable,
         lvlString,
         solveStartX,
