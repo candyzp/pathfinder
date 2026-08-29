@@ -13,6 +13,8 @@
 #include "pathfinder.cpp"
 #undef pathfind
 
+#include "solver_dashboard.hpp"
+
 #include <chrono>
 #include <thread>
 
@@ -50,6 +52,15 @@ std::string attemptStatusV14(
         << " | evaluator threads " << evaluatorThreads
         << " | best " << bestProgress << "%";
     return out.str();
+}
+
+void publishAndForwardV14(
+    PathfinderTelemetry const& telemetry,
+    std::function<void(PathfinderTelemetry const&)> const& callback
+) {
+    publishPathfinderTelemetryV8(telemetry);
+    if (callback)
+        callback(telemetry);
 }
 
 } // namespace
@@ -130,30 +141,28 @@ PathfinderResult pathfind(
                 attemptStop.store(true, std::memory_order_relaxed);
             }
 
-            if (callback) {
-                PathfinderTelemetry telemetry = incoming;
-                telemetry.mode = "single-pathfinder-v14";
-                telemetry.workerCount = 1; // one decision-making solver
-                telemetry.physicalThreadCount = std::max(1, incoming.workerCount);
-                telemetry.guidedCount = 0;
-                telemetry.explorerCount = 0;
-                telemetry.frontierCount = 0;
-                telemetry.archiveCount = 0;
-                telemetry.progressLocked = false;
-                telemetry.stallRescue = incoming.phase == 2;
-                telemetry.rollbackDistance = 0;
-                telemetry.deadEndLevel = 0;
-                telemetry.decision = stalled
-                    ? "No real X progress: ending this search attempt cleanly"
-                    : "Single Pathfinder choosing one route";
-                telemetry.recoveryReason = attemptStatusV14(
-                    attempt + 1,
-                    incoming.recoveryReason,
-                    std::max(1, incoming.workerCount),
-                    globalBestProgress
-                );
-                callback(telemetry);
-            }
+            PathfinderTelemetry telemetry = incoming;
+            telemetry.mode = "single-pathfinder-v14";
+            telemetry.workerCount = 1; // one decision-making solver
+            telemetry.physicalThreadCount = std::max(1, incoming.workerCount);
+            telemetry.guidedCount = 0;
+            telemetry.explorerCount = 0;
+            telemetry.frontierCount = 0;
+            telemetry.archiveCount = 0;
+            telemetry.progressLocked = false;
+            telemetry.stallRescue = incoming.phase == 2;
+            telemetry.rollbackDistance = 0;
+            telemetry.deadEndLevel = 0;
+            telemetry.decision = stalled
+                ? "No real X progress: ending this search attempt cleanly"
+                : "Single Pathfinder choosing one route";
+            telemetry.recoveryReason = attemptStatusV14(
+                attempt + 1,
+                incoming.recoveryReason,
+                std::max(1, incoming.workerCount),
+                globalBestProgress
+            );
+            publishAndForwardV14(telemetry, callback);
         };
 
         PathfinderResult result = pathfind_plain_base_v14(
@@ -183,7 +192,7 @@ PathfinderResult pathfind(
 
         ++stalledAttempts;
 
-        if (callback && attempt + 1 < kMaxFreshAttemptsV14) {
+        if (attempt + 1 < kMaxFreshAttemptsV14) {
             PathfinderTelemetry telemetry;
             telemetry.progress = globalBestProgress;
             telemetry.currentX = globalBestX;
@@ -192,6 +201,7 @@ PathfinderResult pathfind(
             telemetry.workerCount = 1;
             telemetry.physicalThreadCount = 1;
             telemetry.phase = 2;
+            telemetry.stallRescue = true;
             telemetry.totalTrials = 0;
             telemetry.mode = "single-pathfinder-v14";
             telemetry.decision = "Restarting one clean Pathfinder search";
@@ -199,7 +209,7 @@ PathfinderResult pathfind(
             reason << "attempt " << (attempt + 1)
                    << " saturated without real X progress; keeping the best partial route and retrying with a fresh seed";
             telemetry.recoveryReason = reason.str();
-            callback(telemetry);
+            publishAndForwardV14(telemetry, callback);
         }
     }
 
