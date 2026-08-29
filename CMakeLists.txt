@@ -9,7 +9,7 @@ project(pathfinder VERSION 1.0.0)
 add_library(${PROJECT_NAME} SHARED
     src/main.cpp
     src/creator.cpp
-    src/pathfinder_state_v8.cpp
+    src/pathfinder_state_v9.cpp
     src/solver_dashboard.cpp
     src/flappy.cpp
     src/checker.cpp
@@ -17,11 +17,12 @@ add_library(${PROJECT_NAME} SHARED
     # Add any extra C++ source files here
 )
 
-# V8 keeps the state-space architecture, adds explicit failure memory,
-# local stall rescue, independent explorers, and a live brain dashboard.
+# V9 separates speculative X from verified-safe progress. Repeated deaths create
+# a poisoned basin and force progressively deeper rollback until a living route
+# genuinely escapes past the old death zone.
 set_source_files_properties(
     src/main.cpp
-    PROPERTIES COMPILE_DEFINITIONS "pathfind=pathfind_v8"
+    PROPERTIES COMPILE_DEFINITIONS "pathfind=pathfind_v9"
 )
 
 if (NOT DEFINED ENV{GEODE_SDK})
