@@ -52,9 +52,31 @@ std::string decompressedLevelString(GJGameLevel* level) {
     auto decoded = ZipUtils::decompressString(encoded, true, 0);
     if (!decoded.empty())
         return decoded;
-
-    // Editor/local levels can already be represented as plain object data.
     return encoded;
+}
+
+char const* vehicleName(int type) {
+    switch (type) {
+        case 0: return "Cube";
+        case 1: return "Ship";
+        case 2: return "Ball";
+        case 3: return "UFO";
+        case 4: return "Wave";
+        case 5: return "Robot";
+        case 6: return "Spider";
+        case 7: return "Swing";
+        default: return "Unknown";
+    }
+}
+
+char const* searchPhaseName(int phase) {
+    switch (phase) {
+        case 0: return "Structured";
+        case 1: return "Testing";
+        case 2: return "Recovering";
+        case 3: return "Advancing";
+        default: return "Searching";
+    }
 }
 
 void releasePlaybackButtons(PlayLayer* play) {
@@ -65,7 +87,6 @@ void releasePlaybackButtons(PlayLayer* play) {
         for (int button = 1; button <= 3; ++button) {
             if (!g_playback.held[player][button])
                 continue;
-
             play->GJBaseGameLayer::handleButton(false, button, player == 1);
             g_playback.held[player][button] = false;
         }
@@ -119,8 +140,6 @@ void preparePlayback(PlayLayer* layer) {
     g_playback.active = !g_playback.inputs.empty();
     seekPlayback(layer, layer->m_attemptTime);
 
-    // Pathfinder is an autoplay tool. Don't let a generated-input completion
-    // masquerade as a legitimate manual completion.
     if (g_playback.active)
         layer->m_level->m_isCompletionLegitimate = false;
 }
@@ -130,10 +149,6 @@ void armSolution(std::string const& levelName, PathfinderResult const& result) {
     g_solution.inputs = result.inputs;
     g_solution.armed = !g_solution.inputs.empty();
 
-    // If the solver was opened from the pause menu, attach the solution to the
-    // current level and restart from frame zero. A generated route is authored
-    // from the beginning of the attempt, so jumping into it mid-attempt can
-    // leave held inputs and physics state out of sync.
     if (auto* play = PlayLayer::get(); play && play->m_level && levelNameOf(play->m_level) == levelName) {
         preparePlayback(play);
         if (g_playback.active) {
@@ -154,9 +169,6 @@ void feedPlayback(PlayLayer* play) {
         return;
     }
 
-    // Use Geometry Dash's own attempt clock instead of maintaining a second
-    // timer. This keeps playback tied to the actual gameplay timeline and makes
-    // restarts deterministic.
     uint32_t frame = static_cast<uint32_t>(std::llround(
         std::max(0.0, play->m_attemptTime) * kPathfinderTPS
     ));
@@ -167,10 +179,6 @@ void feedPlayback(PlayLayer* play) {
         if (input.button < 1 || input.button > 3)
             continue;
 
-        // Match xdBot/GDR semantics directly: false = player 1, true = player 2.
-        // Routing through GD's own handleButton keeps the same primary control
-        // working across Cube, Ship, Ball, UFO, Wave, Robot, Spider and Swing,
-        // including dual sections.
         play->GJBaseGameLayer::handleButton(
             input.down,
             static_cast<int>(input.button),
@@ -200,6 +208,16 @@ CCMenu* resolvePauseMenu(CCNode* layer, char const* fallbackID, CCPoint fallback
 class PathfinderNode : public CCLayerColor {
     std::atomic_bool m_stop = false;
     std::atomic<double> m_progress = 0;
+    std::atomic<float> m_currentX = 0.f;
+    std::atomic<float> m_deathX = 0.f;
+    std::atomic<float> m_clearance = 0.f;
+    std::atomic<int> m_vehicleType = 0;
+    std::atomic<int> m_searchLevel = 0;
+    std::atomic<int> m_horizonFrames = 0;
+    std::atomic<int> m_candidateCount = 0;
+    std::atomic<int> m_workerCount = 1;
+    std::atomic<int> m_phase = 0;
+    std::atomic<uint64_t> m_totalTrials = 0;
     std::future<PathfinderResult> m_result;
     std::string m_levelName;
 
@@ -231,6 +249,8 @@ public:
             waitMenu->setVisible(false);
         if (auto* game = getChildByID("pathfinder-flappy-game"))
             game->removeFromParentAndCleanup(true);
+        if (auto* debug = getChildByIDRecursive("solver-debug"))
+            debug->setVisible(false);
 
         auto* percent = typeinfo_cast<CCLabelBMFont*>(getChildByIDRecursive("percent"));
         if (percent) {
@@ -260,7 +280,7 @@ public:
                         label->setString("Autoplay armed");
                 })
                 .scale(0.65f)
-                .move(-55, -42)
+                .move(-55, -72)
                 .parent(menu);
         }
 
@@ -293,7 +313,7 @@ public:
         Build<ButtonSprite>::create("Export Macro", "bigFont.fnt", "GJ_button_01.png")
             .intoMenuItem(async::wrapSpawn(exportCallback))
             .scale(0.65f)
-            .move(autoApply || !hasInputs ? 0 : 55, -42)
+            .move(autoApply || !hasInputs ? 0 : 55, -72)
             .parent(menu);
 
         char const* statusText = !hasInputs
@@ -305,7 +325,7 @@ public:
         Build<CCLabelBMFont>::create(statusText, "chatFont.fnt")
             .id("status")
             .scale(0.55f)
-            .move(0, -12)
+            .move(0, -42)
             .parent(menu);
     }
 
@@ -330,25 +350,31 @@ public:
                 return pathfind(lvlString, m_stop, [this](PathfinderTelemetry const& telemetry) {
                     if (m_progress < telemetry.progress)
                         m_progress = telemetry.progress;
+                    m_currentX = telemetry.currentX;
+                    m_deathX = telemetry.deathX;
+                    m_clearance = telemetry.bestClearance;
+                    m_vehicleType = telemetry.vehicleType;
+                    m_searchLevel = telemetry.searchLevel;
+                    m_horizonFrames = telemetry.horizonFrames;
+                    m_candidateCount = telemetry.candidateCount;
+                    m_workerCount = telemetry.workerCount;
+                    m_phase = telemetry.phase;
+                    m_totalTrials = telemetry.totalTrials;
 
-                    if (telemetry.recoveryReason.find(':') != std::string::npos) {
-                        log::debug(
-                            "Pathfinder state: startX={:.2f} currentX={:.2f} furthestX={:.2f} "
-                            "trustedEndX={:.2f} inferredLength={:.2f} frame={} mode={} "
-                            "checkpointFrame={} checkpointX={:.2f} deathX={:.2f} recovery={}",
-                            telemetry.startX,
-                            telemetry.currentX,
-                            telemetry.furthestX,
-                            telemetry.trustedEndX,
-                            telemetry.inferredLength,
-                            telemetry.frame,
-                            telemetry.mode,
-                            telemetry.checkpointFrame,
-                            telemetry.checkpointX,
-                            telemetry.deathX,
-                            telemetry.recoveryReason
-                        );
-                    }
+                    log::debug(
+                        "Pathfinder {} mode={} progress={:.2f}% currentX={:.2f} deathX={:.2f} level={} horizon={} candidates={} workers={} trials={} clearance={:.2f}",
+                        telemetry.recoveryReason,
+                        telemetry.vehicleType,
+                        telemetry.progress,
+                        telemetry.currentX,
+                        telemetry.deathX,
+                        telemetry.searchLevel,
+                        telemetry.horizonFrames,
+                        telemetry.candidateCount,
+                        telemetry.workerCount,
+                        telemetry.totalTrials,
+                        telemetry.bestClearance
+                    );
                 }, trustedEndX);
             } catch (std::exception const& e) {
                 log::error("Pathfinder failed: {}", e.what());
@@ -361,6 +387,23 @@ public:
             if (auto* label = typeinfo_cast<CCLabelBMFont*>(getChildByIDRecursive("percent"))) {
                 auto text = fmt::format("{:.2f}%", m_progress.load());
                 label->setString(text.c_str());
+            }
+
+            if (auto* debug = typeinfo_cast<CCLabelBMFont*>(getChildByIDRecursive("solver-debug"))) {
+                auto text = fmt::format(
+                    "{} | {} | L{} | {} workers\nX {:.0f} | death {:.0f} | clearance {:.1f}\n{} trials | horizon {} | {} candidates",
+                    vehicleName(m_vehicleType.load()),
+                    searchPhaseName(m_phase.load()),
+                    m_searchLevel.load(),
+                    m_workerCount.load(),
+                    m_currentX.load(),
+                    m_deathX.load(),
+                    m_clearance.load(),
+                    m_totalTrials.load(),
+                    m_horizonFrames.load(),
+                    m_candidateCount.load()
+                );
+                debug->setString(text.c_str());
             }
 
             if (m_result.valid() && m_result.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
@@ -379,22 +422,26 @@ public:
 
         Build<CCMenu>::create().parent(this).id("menu").children(
             Build<CCScale9Sprite>::create("GJ_square02.png")
-                .contentSize(270, 155),
+                .contentSize(320, 215),
             Build<CCLabelBMFont>::create("Pathfinding...", "bigFont.fnt")
-                .move(0, 55)
+                .move(0, 82)
                 .scale(0.8f),
             Build<CCLabelBMFont>::create("0.00%", "chatFont.fnt")
                 .id("percent")
-                .move(0, 15),
+                .move(0, 48),
+            Build<CCLabelBMFont>::create("Starting solver...", "chatFont.fnt")
+                .id("solver-debug")
+                .scale(0.42f)
+                .move(0, 0),
             Build<ButtonSprite>::create("Stop", "bigFont.fnt", "GJ_button_04.png")
-                .scale(0.8f)
+                .scale(0.72f)
                 .intoMenuItem(handle)
                 .id("stop")
-                .move(0, -45),
+                .move(0, -82),
             Build<CCSprite>::createSpriteName("GJ_closeBtn_001.png")
                 .intoMenuItem(handle)
                 .id("close")
-                .move(-135, 77)
+                .move(-160, 107)
                 .scale(0.8f)
         );
 
@@ -402,8 +449,8 @@ public:
         auto* waitMenu = CCMenu::create();
         waitMenu->setID("pathfinder-wait-menu");
         waitMenu->setPosition({
-            std::min(win.width - 55.f, win.width / 2.f + 178.f),
-            win.height / 2.f + 88.f
+            std::min(win.width - 55.f, win.width / 2.f + 202.f),
+            win.height / 2.f + 105.f
         });
         addChild(waitMenu, 220);
 
@@ -423,7 +470,6 @@ struct PathfinderGameLayer : geode::Modify<PathfinderGameLayer, GJBaseGameLayer>
         auto* play = typeinfo_cast<PlayLayer*>(static_cast<GJBaseGameLayer*>(this));
         if (play)
             feedPlayback(play);
-
         GJBaseGameLayer::processCommands(dt, isHalfTick, isLastTick);
     }
 };
@@ -439,9 +485,7 @@ struct PathfinderPlayLayer : geode::Modify<PathfinderPlayLayer, PlayLayer> {
     void resetLevel() {
         if (g_playback.layer == this && g_playback.active)
             releasePlaybackButtons(this);
-
         PlayLayer::resetLevel();
-
         if (g_playback.layer == this && g_playback.active)
             seekPlayback(this, m_attemptTime);
     }
@@ -461,18 +505,13 @@ struct PathfinderEditLevelLayer : geode::Modify<PathfinderEditLevelLayer, EditLe
             return false;
 
         auto btn = Build<BasedButtonSprite>::create(
-            CCSprite::create("pathfinder.png"_spr),
-            BaseType::Circle,
-            4,
-            3
+            CCSprite::create("pathfinder.png"_spr), BaseType::Circle, 4, 3
         ).scale(0.8f);
         btn->setTopRelativeScale(1.4f);
 
         btn.intoMenuItem([this]() {
-                Build<PathfinderNode>::create(
-                    levelNameOf(m_level),
-                    decompressedLevelString(m_level)
-                ).parent(this).zOrder(100);
+                Build<PathfinderNode>::create(levelNameOf(m_level), decompressedLevelString(m_level))
+                    .parent(this).zOrder(100);
             })
             .id("pathfinder-button")
             .intoNewParent(CCMenu::create())
@@ -480,7 +519,6 @@ struct PathfinderEditLevelLayer : geode::Modify<PathfinderEditLevelLayer, EditLe
             .id("pathfinder-menu")
             .matchPos(getChildByIDRecursive("delete-button"))
             .move(-45, 0);
-
         return true;
     }
 };
@@ -491,24 +529,18 @@ struct PathfinderLevelInfoLayer : geode::Modify<PathfinderLevelInfoLayer, LevelI
             return false;
 
         auto btn = Build<BasedButtonSprite>::create(
-            CCSprite::create("pathfinder.png"_spr),
-            BaseType::Circle,
-            4,
-            3
+            CCSprite::create("pathfinder.png"_spr), BaseType::Circle, 4, 3
         ).scale(0.8f);
         btn->setTopRelativeScale(1.4f);
 
         btn.intoMenuItem([this]() {
-                Build<PathfinderNode>::create(
-                    levelNameOf(m_level),
-                    decompressedLevelString(m_level)
-                ).parent(this).zOrder(100);
+                Build<PathfinderNode>::create(levelNameOf(m_level), decompressedLevelString(m_level))
+                    .parent(this).zOrder(100);
             })
             .id("pathfinder-button")
             .parent(getChildByID("other-menu"))
             .matchPos(getChildByIDRecursive("list-button"))
             .move(0, 45);
-
         return true;
     }
 };
@@ -524,10 +556,7 @@ struct PathfinderPauseLayer : geode::Modify<PathfinderPauseLayer, PauseLayer> {
 
         if (!getChildByIDRecursive("pathfinder-run-button")) {
             auto runBtn = Build<BasedButtonSprite>::create(
-                CCSprite::create("pathfinder.png"_spr),
-                BaseType::Circle,
-                4,
-                3
+                CCSprite::create("pathfinder.png"_spr), BaseType::Circle, 4, 3
             ).scale(0.62f);
             runBtn->setTopRelativeScale(1.35f);
 
@@ -535,9 +564,7 @@ struct PathfinderPauseLayer : geode::Modify<PathfinderPauseLayer, PauseLayer> {
                     if (auto* play = PlayLayer::get(); play && play->m_level) {
                         float endX = play->getEndPosition().x;
                         Build<PathfinderNode>::create(
-                            levelNameOf(play->m_level),
-                            decompressedLevelString(play->m_level),
-                            endX
+                            levelNameOf(play->m_level), decompressedLevelString(play->m_level), endX
                         ).parent(this).zOrder(200);
                     }
                 })
@@ -546,12 +573,9 @@ struct PathfinderPauseLayer : geode::Modify<PathfinderPauseLayer, PauseLayer> {
 
             Build<CCSprite>::createSpriteName("GJ_optionsBtn_001.png")
                 .scale(0.62f)
-                .intoMenuItem([](CCMenuItemSpriteExtra*) {
-                    openPathfinderSettings();
-                })
+                .intoMenuItem([](CCMenuItemSpriteExtra*) { openPathfinderSettings(); })
                 .id("pathfinder-settings-button")
                 .parent(menu);
-
             menu->updateLayout();
         }
     }
@@ -568,10 +592,7 @@ struct PathfinderEditorPauseLayer : geode::Modify<PathfinderEditorPauseLayer, Ed
         addChild(menu, 30);
 
         auto runBtn = Build<BasedButtonSprite>::create(
-            CCSprite::create("pathfinder.png"_spr),
-            BaseType::Circle,
-            4,
-            3
+            CCSprite::create("pathfinder.png"_spr), BaseType::Circle, 4, 3
         ).scale(0.6f);
         runBtn->setTopRelativeScale(1.35f);
 
@@ -580,10 +601,8 @@ struct PathfinderEditorPauseLayer : geode::Modify<PathfinderEditorPauseLayer, Ed
                     return;
                 std::string liveLevel = m_editorLayer->getLevelString().c_str();
                 auto* level = m_editorLayer->m_level;
-                Build<PathfinderNode>::create(
-                    levelNameOf(level),
-                    liveLevel
-                ).parent(this).zOrder(200);
+                Build<PathfinderNode>::create(levelNameOf(level), liveLevel)
+                    .parent(this).zOrder(200);
             })
             .id("pathfinder-editor-run-button")
             .parent(menu)
@@ -591,9 +610,7 @@ struct PathfinderEditorPauseLayer : geode::Modify<PathfinderEditorPauseLayer, Ed
 
         Build<CCSprite>::createSpriteName("GJ_optionsBtn_001.png")
             .scale(0.6f)
-            .intoMenuItem([](CCMenuItemSpriteExtra*) {
-                openPathfinderSettings();
-            })
+            .intoMenuItem([](CCMenuItemSpriteExtra*) { openPathfinderSettings(); })
             .id("pathfinder-editor-settings-button")
             .parent(menu)
             .move(28, 0);
