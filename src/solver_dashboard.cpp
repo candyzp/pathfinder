@@ -50,7 +50,7 @@ char const* precisionNameV8(int level) {
     return "broad";
 }
 
-std::string compactTextV8(std::string value, size_t maxLength = 62) {
+std::string compactTextV8(std::string value, size_t maxLength = 72) {
     for (char& c : value) {
         if (c == '\n' || c == '\r' || c == '\t')
             c = ' ';
@@ -62,6 +62,16 @@ std::string compactTextV8(std::string value, size_t maxLength = 62) {
     if (maxLength < 4)
         return value.substr(0, maxLength);
     return value.substr(0, maxLength - 3) + "...";
+}
+
+char const* phaseNameV8(int phase, bool stallRescue) {
+    if (stallRescue || phase == 2)
+        return "RECOVERY";
+    if (phase == 3)
+        return "ADVANCING";
+    if (phase == 4)
+        return "VALIDATING";
+    return "SEARCHING";
 }
 
 class PathfinderDashboardTickerV8 : public CCObject {
@@ -101,7 +111,7 @@ public:
                 return;
             dashboard->setID("solver-dashboard-v8");
             dashboard->setAnchorPoint({0.5f, 0.5f});
-            dashboard->setScale(0.285f);
+            dashboard->setScale(0.30f);
             dashboard->setPosition(original->getPosition() + ccp(0.f, -2.f));
             parent->addChild(dashboard, original->getZOrder() + 1);
         }
@@ -112,66 +122,41 @@ public:
         original->setOpacity(0);
 
         auto const& t = state.telemetry;
-        int alive = std::max(0, t.producedCount);
-        int rejected = std::max(0, t.duplicateCount + t.deadCount);
         double displayProgress = t.progress >= 100.0 ? 99.99 : t.progress;
-        float speculativeLead = std::max(0.f, t.furthestX - t.checkpointX);
         int horizonMs = static_cast<int>(std::lround(
             static_cast<double>(std::max(0, t.horizonFrames)) * 1000.0 / 240.0
         ));
-        std::string deadEnd = t.progressLocked
-            ? fmt::format(
-                "X {:.0f} | rollback {} | depth {} | SAFE LOCKED",
-                t.focusX,
-                t.rollbackDistance,
-                t.deadEndLevel
-            )
-            : t.stallRescue
-                ? "team-local recovery active | SAFE preserved"
-                : "none | safe progress unlocked";
         std::string behavior = compactTextV8(
             !t.decision.empty() ? t.decision : t.recoveryReason
         );
         std::string why = compactTextV8(t.recoveryReason);
-        std::string solverMode = compactTextV8(t.mode, 46);
+        std::string solverMode = compactTextV8(t.mode, 44);
 
         auto text = fmt::format(
             "PATHFINDER {}\n"
             "DOING  {}\n"
             "WHY    {}\n"
-            "SAFE   {:.2f}% | {} | X {:.0f} | clearance {:.1f}\n"
-            "SEEN   X {:.0f} | speculative lead +{:.0f}\n"
-            "HELPERS {} | {} guided + {} explore | frontier {}\n"
-            "SEARCH {} | horizon {}f / {}ms | archive {}\n"
-            "DEADEND {}\n"
-            "RESULT {} alive -> {} unique | {} rejected | {} dead\n"
-            "STALL  {} layers | recoveries {} | {} real threads\n"
+            "BEST   {:.2f}% | X {:.0f}\n"
+            "NOW    X {:.0f} | checkpoint X {:.0f} | clearance {:.1f}\n"
+            "MODE   {} | search {} | {}\n"
+            "LOOK   {}f / {}ms | {} candidates\n"
+            "CPU    {} evaluator threads | 1 decision solver\n"
             "SPEED  {:.0f} trials/s | {} total trials",
             solverMode,
             behavior,
             why,
             displayProgress,
-            vehicleNameV8(t.vehicleType),
+            t.furthestX,
+            t.currentX,
             t.checkpointX,
             t.bestClearance,
-            t.furthestX,
-            speculativeLead,
-            t.workerCount,
-            t.guidedCount,
-            t.explorerCount,
-            t.frontierCount,
+            vehicleNameV8(t.vehicleType),
             precisionNameV8(t.searchLevel),
+            phaseNameV8(t.phase, t.stallRescue),
             t.horizonFrames,
             horizonMs,
-            t.archiveCount,
-            deadEnd,
-            alive,
-            t.uniqueCount,
-            rejected,
-            t.deadCount,
-            t.stallLayers,
-            t.recoveryCount,
-            t.physicalThreadCount,
+            t.candidateCount,
+            std::max(1, t.physicalThreadCount),
             state.trialsPerSecond,
             t.totalTrials
         );
