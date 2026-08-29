@@ -66,9 +66,10 @@ void trySnap(Block const& b, Player& p) {
 	diff.y = p.grav(diff.y);
 
 	if (float threshold = snapThreshold(diff, p); threshold > 0) {
-		auto next = p.level->getState(snapData.playerFrame, p.player2).nextPlayer();
-		if (!next) return;
-		p.pos.x = std::clamp(next->pos.x + diff.x, p.pos.x - threshold, p.pos.x + threshold);
+		// This is the X of the state immediately after the original snap. Keeping it
+		// directly in Player makes a simulator state self-contained, which lets the
+		// search fork/restore compact states without retaining its entire prefix.
+		p.pos.x = std::clamp(snapData.nextX + diff.x, p.pos.x - threshold, p.pos.x + threshold);
 	}
 }
 
@@ -221,6 +222,7 @@ void Block::collide(Player& p) const {
 
 			p.snapData.playerFrame = p.level->currentFrame();
 			p.snapData.object = *this;
+			p.snapData.nextX = p.pos.x;
 		}
 	} else {
 		if (p.vehicle.type == VehicleType::Ship || p.vehicle.type == VehicleType::Ufo ||

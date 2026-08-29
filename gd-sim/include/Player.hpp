@@ -61,6 +61,7 @@ struct Player : public Entity {
 	struct {
 		Entity object;
 		int playerFrame = 0;
+		float nextX = 0;
 	} snapData;
 
 	float ceiling;
@@ -85,6 +86,13 @@ struct Player : public Entity {
 	bool dashing;
 	bool dualActive;
 	bool player2;
+
+	/// Per-frame provenance for horizontal discontinuities. Pathfinder accepts a
+	/// large X jump only when the simulator records that a uniquely resolved
+	/// teleport authored that exact jump.
+	bool teleported;
+	float teleportFromX;
+	float teleportToX;
 
 	/// Letter blocks are evaluated before solid blocks each frame.
 	bool dBlock;

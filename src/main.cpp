@@ -175,6 +175,9 @@ public:
             percent->setString(progressText.c_str());
         }
 
+        if (!result.diagnostics.empty())
+            log::info("Pathfinder diagnostics: {}", result.diagnostics);
+
         bool autoApply = Mod::get()->getSettingValue<bool>("auto-apply-inputs");
         bool hasInputs = !result.inputs.empty();
         if (autoApply && hasInputs)
@@ -259,9 +262,28 @@ public:
 
         m_result = std::async(std::launch::async, [lvlString, trustedEndX, this]() {
             try {
-                return pathfind(lvlString, m_stop, [this](double progress) {
-                    if (m_progress < progress)
-                        m_progress = progress;
+                return pathfind(lvlString, m_stop, [this](PathfinderTelemetry const& telemetry) {
+                    if (m_progress < telemetry.progress)
+                        m_progress = telemetry.progress;
+
+                    if (telemetry.recoveryReason.find(':') != std::string::npos) {
+                        log::debug(
+                            "Pathfinder state: startX={:.2f} currentX={:.2f} furthestX={:.2f} "
+                            "trustedEndX={:.2f} inferredLength={:.2f} frame={} mode={} "
+                            "checkpointFrame={} checkpointX={:.2f} deathX={:.2f} recovery={}",
+                            telemetry.startX,
+                            telemetry.currentX,
+                            telemetry.furthestX,
+                            telemetry.trustedEndX,
+                            telemetry.inferredLength,
+                            telemetry.frame,
+                            telemetry.mode,
+                            telemetry.checkpointFrame,
+                            telemetry.checkpointX,
+                            telemetry.deathX,
+                            telemetry.recoveryReason
+                        );
+                    }
                 }, trustedEndX);
             } catch (std::exception const& e) {
                 log::error("Pathfinder failed: {}", e.what());

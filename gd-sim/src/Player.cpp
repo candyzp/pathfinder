@@ -52,6 +52,9 @@ void Player::preCollision(bool pressed) {
 	velocityOverride = false;
 	gravityPortal = false;
 	roundVelocity = true;
+	teleported = false;
+	teleportFromX = pos.x;
+	teleportToX = pos.x;
 
 	if (button != pressed) {
 		button = pressed;
@@ -158,5 +161,6 @@ Player::Player() :
 	dashAngle(0), dashSpeed(0), gravityScale(1.f), timeWarp(1.f), direction(1),
 	velocityOverride(false), button(false), input(false), buffer(false), vehicleBuffer(false),
 	upsideDown(false), small(false), gravityPortal(false), roundVelocity(true), dashing(false),
-	dualActive(false), player2(false), dBlock(false), jBlock(false), hBlock(false), fBlock(false),
+	dualActive(false), player2(false), teleported(false), teleportFromX(0), teleportToX(0),
+	dBlock(false), jBlock(false), hBlock(false), fBlock(false),
 	speed(1), slopeData({{}, 0, false}) {}

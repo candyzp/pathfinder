@@ -30,7 +30,10 @@ class Level {
 	size_t objectCount = 0;
 
 	/// Sections are used just like real GD. See Object.hpp for more info on ObjectContainer.
-	std::vector<std::vector<ObjectContainer>> sections;
+	/// Sparse X sections. Modern levels often keep helper/decoration objects very far
+	/// outside the playable area; a dense vector indexed by X could allocate millions
+	/// of empty sections before simulation even began.
+	std::unordered_map<int, std::vector<ObjectContainer>> sections;
 
 	/// Static lookup of authored group target positions/rotations. This includes
 	/// decorative objects too, because teleport targets are often invisible helpers.
@@ -46,6 +49,13 @@ class Level {
 
 	/// Playable level end used by the physics solver and progress counter.
 	float length = 0.0f;
+
+	/// The constructor's best offline endpoint estimate. `length` may later be
+	/// replaced with PlayLayer::getEndPosition().x for an active-level solve.
+	float inferredLength = 0.0f;
+
+	/// Human-readable source for endpoint diagnostics.
+	std::string lengthSource = "fallback";
 
 	static constexpr uint32_t sectionSize = 100;
 	bool debug = false;

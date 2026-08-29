@@ -39,10 +39,10 @@ void registerGroupTargets(std::unordered_map<int, std::string> const& obj,
 		targets[group].push_back(marker);
 }
 
-// Estimate the playable X span from the continuous authored object cloud that starts
-// near the player's real start position. Remote decoration/helper clusters are common in
-// modern levels and must not become the completion point just because they have a huge X.
-float connectedAuthoredExtent(std::vector<float> xs, float startX) {
+// Estimate the X span of the object cloud connected to the real start. Remote helper
+// clusters are common in modern levels and must not become the completion point merely
+// because they contain an object with a very large X coordinate.
+float connectedExtent(std::vector<float> xs, float startX, float maxConnectedGap) {
 	if (xs.empty())
 		return 0.f;
 
@@ -56,7 +56,6 @@ float connectedAuthoredExtent(std::vector<float> xs, float startX) {
 	}
 
 	constexpr float backAllowance = 600.f;
-	constexpr float maxConnectedGap = 4800.f;
 	float minimumX = std::max(0.f, startX - backAllowance);
 
 	auto it = std::lower_bound(uniqueXs.begin(), uniqueXs.end(), minimumX);
@@ -76,6 +75,112 @@ float connectedAuthoredExtent(std::vector<float> xs, float startX) {
 	}
 
 	return extent;
+}
+
+struct TeleportReachLink {
+	float sourceX = 0.f;
+	int targetGroup = 0;
+};
+
+float reachableGameplayExtent(
+	std::vector<float> xs,
+	float startX,
+	float maxConnectedGap,
+	std::vector<TeleportReachLink> const& teleportLinks,
+	std::unordered_map<int, std::vector<Entity>> const& groupTargets
+) {
+	struct ResolvedLink { float sourceX; float targetX; };
+	std::vector<ResolvedLink> resolvedLinks;
+	for (auto const& link : teleportLinks) {
+		auto target = groupTargets.find(link.targetGroup);
+		if (target == groupTargets.end() || target->second.size() != 1)
+			continue;
+		float targetX = target->second.front().pos.x;
+		if (!std::isfinite(targetX) || targetX < 0.f)
+			continue;
+		xs.push_back(targetX);
+		resolvedLinks.push_back({link.sourceX, targetX});
+	}
+
+	if (xs.empty())
+		return 0.f;
+	std::sort(xs.begin(), xs.end());
+	xs.erase(std::unique(xs.begin(), xs.end(), [](float a, float b) {
+		return std::abs(a - b) <= 0.5f;
+	}), xs.end());
+
+	struct Cluster { float low; float high; bool reachable = false; };
+	std::vector<Cluster> clusters;
+	for (float x : xs) {
+		if (clusters.empty() || x - clusters.back().high > maxConnectedGap)
+			clusters.push_back({x, x, false});
+		else
+			clusters.back().high = x;
+	}
+
+	auto clusterFor = [&](float x) -> int {
+		for (size_t i = 0; i < clusters.size(); ++i) {
+			if (x >= clusters[i].low - 1.f && x <= clusters[i].high + 1.f)
+				return static_cast<int>(i);
+		}
+		return -1;
+	};
+
+	for (auto& cluster : clusters) {
+		if (cluster.low <= startX + maxConnectedGap && cluster.high >= startX - 600.f) {
+			cluster.reachable = true;
+			break;
+		}
+	}
+
+	bool changed = true;
+	while (changed) {
+		changed = false;
+		for (auto const& link : resolvedLinks) {
+			int source = clusterFor(link.sourceX);
+			int target = clusterFor(link.targetX);
+			if (source >= 0 && target >= 0 && clusters[source].reachable && !clusters[target].reachable) {
+				clusters[target].reachable = true;
+				changed = true;
+			}
+		}
+	}
+
+	float extent = 0.f;
+	for (auto const& cluster : clusters) {
+		if (cluster.reachable)
+			extent = std::max(extent, cluster.high);
+	}
+	return extent;
+}
+
+bool boolField(std::unordered_map<int, std::string> const& fields, int key) {
+	auto it = fields.find(key);
+	return it != fields.end() && !it->second.empty() && atoi(it->second.c_str()) != 0;
+}
+
+// Unsupported objects are normally decoration and remain harmless metadata. These IDs
+// are exceptions: they can alter collision geometry or trigger execution, so their X
+// positions still contribute to offline endpoint inference and diagnostics.
+bool unsupportedGameplayObject(int id) {
+	switch (id) {
+		case 901:  // Move
+		case 1049: // Toggle
+		case 1268: // Spawn
+		case 1346: // Rotate
+		case 1347: // Follow
+		case 1595: // Touch
+		case 1616: // Stop
+		case 1814: // Follow Player Y
+		case 1815: // Collision
+		case 2067: // Scale
+		case 2068: // Advanced Random
+		case 3032: // Keyframe
+		case 3607: // Sequence
+			return true;
+		default:
+			return false;
+	}
 }
 
 UnsupportedObjectInfo makeUnsupportedInfo(
@@ -131,6 +236,11 @@ void Level::initLevelSettings(std::string const& lvlSettings, Player& player) {
 	if (vehicle < 0 || vehicle > static_cast<int>(VehicleType::Swing))
 		vehicle = 0;
 	player.vehicle = Vehicle::from(static_cast<VehicleType>(vehicle));
+	// Entering a Wave portal normally installs its 10x10 (6x6 mini) collision
+	// box on the following frame. A level that starts as Wave has no portal, so
+	// initialize that mode-specific hitbox directly instead of leaving a Cube box.
+	if (player.vehicle.type == VehicleType::Wave)
+		player.size = player.small ? Vec2D(6, 6) : Vec2D(10, 10);
 
 	player.floor = 0;
 	player.ceiling = player.vehicle.bounds;
@@ -143,6 +253,9 @@ Level::Level(std::string const& lvlString) {
 
 	auto player = Player();
 	std::vector<float> authoredXs;
+	std::vector<float> gameplayXs;
+	std::vector<TeleportReachLink> teleportLinks;
+	float explicitEndX = 0.f;
 
 	while (std::getline(ss, objstr, ';')) {
 		if (first) {
@@ -181,6 +294,18 @@ Level::Level(std::string const& lvlString) {
 		}
 
 		registerGroupTargets(obj, groupTargets);
+		if ((objectID == 2902 || objectID == 3022 || objectID == 3027) && validAuthoredX) {
+			auto target = obj.find(51);
+			if (target != obj.end() && !target->second.empty())
+				teleportLinks.push_back({authoredX, atoi(target->second.c_str())});
+		}
+
+		// A normal, X-crossing End Trigger is an authored endpoint. Spawn/touch End
+		// Triggers remain runtime mechanics and cannot safely define offline length.
+		if ((objectID == 1931 || objectID == 3600) &&
+			!boolField(obj, 62) && !boolField(obj, 11) && validAuthoredX) {
+			explicitEndX = std::max(explicitEndX, authoredX);
+		}
 
 		auto unsupported = makeUnsupportedInfo(objectID, obj);
 
@@ -188,18 +313,45 @@ Level::Level(std::string const& lvlString) {
 			auto ob = ob_o.value();
 
 			ob->id = objectCount++;
+			if (validAuthoredX)
+				gameplayXs.push_back(authoredX);
 
-			size_t sectionPos = static_cast<size_t>(std::max(.0f, ob->pos.x / sectionSize));
-			if (sectionPos >= sections.size())
-				sections.resize(sectionPos + 1);
-			sections[sectionPos].push_back(ob);
+			int sectionPos = static_cast<int>(std::floor(ob->pos.x / sectionSize));
+			sections[sectionPos].push_back(std::move(ob));
 		} else {
+			if (validAuthoredX && unsupportedGameplayObject(objectID))
+				gameplayXs.push_back(authoredX);
 			unsupportedObjects.push_back(std::move(unsupported));
 		}
 	}
 
-	float connectedExtent = connectedAuthoredExtent(std::move(authoredXs), player.pos.x);
-	float inferredLength = connectedExtent > 0.f ? connectedExtent + 100.f : 0.f;
+	constexpr float maxGameplayGap = 3000.f;
+	float gameplayExtent = reachableGameplayExtent(
+		gameplayXs,
+		player.pos.x,
+		maxGameplayGap,
+		teleportLinks,
+		groupTargets
+	);
+	float authoredConnectedExtent = connectedExtent(authoredXs, player.pos.x, maxGameplayGap);
+
+	if (explicitEndX > player.pos.x + 30.f && explicitEndX <= gameplayExtent + 1.f) {
+		inferredLength = explicitEndX;
+		lengthSource = "end-trigger";
+	} else if (gameplayExtent > 0.f) {
+		// A conservative tail prevents the last obstacle from masquerading as the
+		// actual GD end position. It is safer for playback to contain a little empty
+		// travel than for offline progress to jump to 100% early.
+		inferredLength = gameplayExtent + 240.f;
+		lengthSource = "gameplay-extent";
+	} else if (authoredConnectedExtent > 0.f) {
+		inferredLength = authoredConnectedExtent + 240.f;
+		lengthSource = "authored-fallback";
+	} else {
+		inferredLength = player.pos.x + 300.f;
+		lengthSource = "minimum-fallback";
+	}
+
 	length = std::max(inferredLength, player.pos.x + 300.f);
 
 	player.level = this;
@@ -224,32 +376,35 @@ void Level::simulatePlayer(Player& p, bool pressed, float dt) {
 		return;
 	}
 
-	size_t sectionIdx = std::min(std::max(0, (int)(p.pos.x / sectionSize)), (int)sections.size() - 1);
-	auto prevSection = &sections[sectionIdx == 0 ? 0 : sectionIdx - 1];
-	auto currSection = &sections[sectionIdx];
-	auto nextSection = &sections[sectionIdx + 1 >= sections.size() ? sections.size() - 1 : sectionIdx + 1];
+	int sectionIdx = static_cast<int>(std::floor(p.pos.x / sectionSize));
+	std::vector<ObjectContainer> const* nearby[3] = {nullptr, nullptr, nullptr};
+	for (int i = 0; i < 3; ++i) {
+		auto it = sections.find(sectionIdx + i - 1);
+		if (it != sections.end())
+			nearby[i] = &it->second;
+	}
 
-	std::vector<ObjectContainer>* nearby[3] = { prevSection, nullptr, nullptr };
-	if (currSection != prevSection)
-		nearby[1] = currSection;
-	if (nextSection != currSection && nextSection != prevSection)
-		nearby[2] = nextSection;
-
-	std::vector<ObjectContainer> blocks;
-	std::vector<ObjectContainer> hazards;
-	blocks.reserve(100);
-	hazards.reserve(100);
+	// Reuse pointer scratch space across frames. The old hot loop allocated two
+	// vectors and copied every ObjectContainer on every simulated tick.
+	thread_local std::vector<ObjectContainer const*> blocks;
+	thread_local std::vector<ObjectContainer const*> hazards;
+	blocks.clear();
+	hazards.clear();
+	if (blocks.capacity() < 128)
+		blocks.reserve(128);
+	if (hazards.capacity() < 128)
+		hazards.reserve(128);
 
 	size_t numCollisions = 0;
 
-	for (auto section : nearby) {
+	for (auto const* section : nearby) {
 		if (section == nullptr) continue;
-		for (auto& o : *section) {
+		for (auto const& o : *section) {
 			if (p.dead || p.completed) break;
 			if (o->prio == 1)
-				blocks.push_back(o);
+				blocks.push_back(&o);
 			else if (o->prio == 2)
-				hazards.push_back(o);
+				hazards.push_back(&o);
 			else if (o->touching(p)) {
 				++numCollisions;
 				o->collide(p);
@@ -259,15 +414,16 @@ void Level::simulatePlayer(Player& p, bool pressed, float dt) {
 
 	for (int i = static_cast<int>(blocks.size()) - 1; i >= 0; --i) {
 		if (p.dead || p.completed) break;
-		auto& b = blocks[i];
+		auto const& b = *blocks[i];
 		if (b->touching(p)) {
 			++numCollisions;
 			b->collide(p);
 		}
 	}
 
-	for (auto& h : hazards) {
+	for (auto const* hazard : hazards) {
 		if (p.dead || p.completed) break;
+		auto const& h = *hazard;
 		if (h->touching(p)) {
 			++numCollisions;
 			h->collide(p);
@@ -290,8 +446,8 @@ Player& Level::runFrame(bool pressed, float dt) {
 }
 
 Player& Level::runFrame(bool player1Pressed, bool player2Pressed, float dt) {
-	Player p1Before = gameStates.back();
-	Player p2Before = gameStates2.back();
+	Player const& p1Before = gameStates.back();
+	Player const& p2Before = gameStates2.back();
 	Player p1 = p1Before;
 	Player p2 = p2Before;
 	bool wasDual = p1.dualActive;
@@ -351,7 +507,7 @@ float Level::findOppositeSurface(Player const& player, bool towardsCeiling) cons
 	float best = towardsCeiling ? FLT_MAX : -FLT_MAX;
 	float halfWidth = player.size.x / 2.f;
 
-	for (auto const& section : sections) {
+	for (auto const& [_, section] : sections) {
 		for (auto const& o : section) {
 			if (o->prio != 1)
 				continue;
@@ -389,21 +545,32 @@ std::optional<Entity> Level::getGroupTarget(int groupID, size_t index) const {
 
 void Level::rollback(int frame) {
 	int target = frame > 0 ? frame : 1;
-	gameStates.resize(target);
-	gameStates2.resize(target);
+	auto trim = [target](std::vector<Player>& states) {
+		while (states.size() > 1 && states.back().frame > target)
+			states.pop_back();
+	};
+	trim(gameStates);
+	trim(gameStates2);
 }
 
 int Level::currentFrame() const {
-	return gameStates.size();
+	return gameStates.empty() ? 0 : gameStates.back().frame;
 }
 
 Player const& Level::getState(int frame, bool player2) const {
 	auto const& states = player2 ? gameStates2 : gameStates;
-	if (frame <= 0)
-		return states[0];
-	if (states.size() < static_cast<size_t>(frame))
+	if (frame <= states.front().frame)
+		return states.front();
+	if (frame >= states.back().frame)
 		return states.back();
-	return states[frame - 1];
+
+	size_t direct = static_cast<size_t>(frame - states.front().frame);
+	if (direct < states.size() && states[direct].frame == frame)
+		return states[direct];
+
+	auto it = std::lower_bound(states.begin(), states.end(), frame,
+		[](Player const& state, int value) { return state.frame < value; });
+	return it == states.end() ? states.back() : *it;
 }
 
 Player& Level::latestState() {

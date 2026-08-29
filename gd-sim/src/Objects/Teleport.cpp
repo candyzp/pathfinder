@@ -69,6 +69,9 @@ bool TeleportConfig::apply(Player& p, Vec2D const& sourcePos) const {
     if (ignoreY)
         destination.y = before.y;
 
+    p.teleported = true;
+    p.teleportFromX = before.x;
+    p.teleportToX = destination.x;
     p.pos = destination;
 
     switch (exitGravity) {
