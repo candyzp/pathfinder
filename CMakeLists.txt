@@ -9,20 +9,18 @@ project(pathfinder VERSION 1.0.0)
 add_library(${PROJECT_NAME} SHARED
     src/main.cpp
     src/creator.cpp
-    src/pathfinder_team_v4.cpp
+    src/pathfinder_team_v5.cpp
     src/flappy.cpp
     src/checker.cpp
     src/debug.cpp
     # Add any extra C++ source files here
 )
 
-# v4 includes the proven v3 worker engine and exports the stricter controller as
-# pathfind_v4. Route only the UI/controller translation unit to that symbol; the
-# included v3 pathfind remains available internally for comparison without being
-# called by the mod.
+# v5 includes the v4 hard-negative controller and adds an end-to-end replay
+# validation gate before a run is allowed to report 100% complete.
 set_source_files_properties(
     src/main.cpp
-    PROPERTIES COMPILE_DEFINITIONS "pathfind=pathfind_v4"
+    PROPERTIES COMPILE_DEFINITIONS "pathfind=pathfind_v5"
 )
 
 if (NOT DEFINED ENV{GEODE_SDK})
