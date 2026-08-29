@@ -79,4 +79,6 @@ class Level {
 	Player const& getState(int frame, bool player2 = false) const;
 	Player& latestState();
 	Player& latestState2();
+	Player const& latestState() const { return gameStates.back(); }
+	Player const& latestState2() const { return gameStates2.back(); }
 };
