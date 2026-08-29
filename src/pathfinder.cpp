@@ -9,6 +9,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -231,8 +232,6 @@ struct Level2 : public Level {
                 trigger.easing = intField(fields, 30);
                 trigger.easingRate = floatField(fields, 85, 2.f);
 
-                // Support normal X-crossing relative Move triggers. Spawn/touch,
-                // lock-to-player and target-position variants need extra runtime state.
                 trigger.unsupportedMode =
                     boolField(fields, 11) ||
                     boolField(fields, 62) ||
@@ -363,8 +362,6 @@ struct Level2 : public Level {
             }
         }
 
-        // Rebuild from authored positions every time so trial rollback cannot
-        // accumulate movement from a previous candidate.
         for (int objectID : movingObjectIDs) {
             auto base = baseObjectPositions.find(objectID);
             if (base == baseObjectPositions.end())
@@ -419,9 +416,17 @@ static bool reachedGoal(Level2 const& lvl) {
     return !lvl.gameStates.empty() && lvl.gameStates.back().completed;
 }
 
+static bool flightMode(VehicleType type) {
+    return type == VehicleType::Ship ||
+           type == VehicleType::Wave ||
+           type == VehicleType::Swing;
+}
+
 struct TrialResult {
     int frame = 0;
     float x = 0.f;
+    float deathX = 0.f;
+    float minClearance = 10000.f;
     bool dead = false;
     bool complete = false;
 };
@@ -478,6 +483,37 @@ static int maxToggleBudget(VehicleType type) {
     return 12;
 }
 
+static float hazardClearance(Level2 const& lvl, Player const& player) {
+    Entity hitbox = player.unrotatedHitbox();
+    int section = static_cast<int>(std::floor(player.pos.x / Level::sectionSize));
+    float best = 10000.f;
+
+    for (int s = section - 1; s <= section + 1; ++s) {
+        auto it = lvl.sections.find(s);
+        if (it == lvl.sections.end())
+            continue;
+
+        for (auto const& object : it->second) {
+            if (object->prio != 2)
+                continue;
+
+            float dx = std::max({
+                object->getLeft() - hitbox.getRight(),
+                hitbox.getLeft() - object->getRight(),
+                0.f
+            });
+            float dy = std::max({
+                object->getBottom() - hitbox.getTop(),
+                hitbox.getBottom() - object->getTop(),
+                0.f
+            });
+            best = std::min(best, std::sqrt(dx * dx + dy * dy));
+        }
+    }
+
+    return best;
+}
+
 static TrialResult tryInputs(
     Level2& lvl,
     std::set<SearchInput> const& inputs,
@@ -488,6 +524,11 @@ static TrialResult tryInputs(
     bool press1Before = lvl.press1;
     bool press2Before = lvl.press2;
     int endFrame = startFrame + horizonFrames;
+    VehicleType startMode = lvl.latestState().vehicle.type;
+    int clearanceStride = flightMode(startMode)
+        ? 6
+        : startMode == VehicleType::Robot ? 8 : 12;
+    float minClearance = hazardClearance(lvl, lvl.latestState());
 
     while (lvl.currentFrame() < endFrame &&
            !lvl.latestState().dead &&
@@ -497,12 +538,29 @@ static TrialResult tryInputs(
             lvl.press1 = !lvl.press1;
         if (inputs.contains(inputKey(current, true)))
             lvl.press2 = !lvl.press2;
+
         lvl.runFrame(lvl.press1, lvl.press2, 1.f / 240.f);
+
+        if (!lvl.latestState().dead &&
+            (lvl.currentFrame() - startFrame) % clearanceStride == 0) {
+            minClearance = std::min(
+                minClearance,
+                hazardClearance(lvl, lvl.latestState())
+            );
+            if (lvl.latestState().dualActive) {
+                minClearance = std::min(
+                    minClearance,
+                    hazardClearance(lvl, lvl.latestState2())
+                );
+            }
+        }
     }
 
     TrialResult result {
         lvl.currentFrame(),
         lvl.latestState().pos.x,
+        lvl.latestState().dead ? lvl.latestState().pos.x : 0.f,
+        minClearance,
         lvl.latestState().dead,
         !lvl.latestState().dead && reachedGoal(lvl)
     };
@@ -512,6 +570,7 @@ static TrialResult tryInputs(
         (y > std::max(1300.f, lvl.highestY + 600.f) || y < -600.f)) {
         result.frame = startFrame;
         result.x = startX;
+        result.deathX = startX;
         result.dead = true;
     }
 
@@ -539,7 +598,8 @@ static bool betterTrial(
     size_t toggleCount,
     bool haveBest,
     TrialResult const& best,
-    size_t bestToggleCount
+    size_t bestToggleCount,
+    VehicleType mode
 ) {
     if (!haveBest)
         return true;
@@ -547,18 +607,201 @@ static bool betterTrial(
     if (trial.complete != best.complete)
         return trial.complete;
 
-    // This is the important rule: a path the simulator already knows dies cannot
-    // outrank a path that is still alive merely because it lasted more frames.
     if (trial.dead != best.dead)
         return !trial.dead;
 
-    // Geometry progress is the primary objective. Frame count is only a tiebreaker,
-    // which prevents reverse/stall sections from replacing a farther playable route.
-    if (std::abs(trial.x - best.x) > 0.01f)
-        return trial.x > best.x;
+    if (trial.dead && best.dead) {
+        if (std::abs(trial.x - best.x) > 0.01f)
+            return trial.x > best.x;
+        if (trial.frame != best.frame)
+            return trial.frame > best.frame;
+        return toggleCount < bestToggleCount;
+    }
+
+    float progressBand = flightMode(mode)
+        ? 42.f
+        : mode == VehicleType::Robot ? 28.f : 16.f;
+    float xDelta = trial.x - best.x;
+    if (std::abs(xDelta) > progressBand)
+        return xDelta > 0.f;
+
+    float clearanceDelta = trial.minClearance - best.minClearance;
+    float clearanceBand = flightMode(mode)
+        ? 1.5f
+        : mode == VehicleType::Robot ? 1.0f : 0.75f;
+    if (std::abs(clearanceDelta) > clearanceBand)
+        return clearanceDelta > 0.f;
+
+    if (std::abs(xDelta) > 0.01f)
+        return xDelta > 0.f;
     if (trial.frame != best.frame)
         return trial.frame > best.frame;
     return toggleCount < bestToggleCount;
+}
+
+static void addToggle(
+    std::set<SearchInput>& inputs,
+    int frame,
+    int horizonFrames,
+    int offset,
+    bool player2
+) {
+    if (offset < 0 || offset >= horizonFrames)
+        return;
+    inputs.insert(inputKey(static_cast<uint32_t>(frame + offset), player2));
+}
+
+static std::vector<std::set<SearchInput>> structuredCandidates(
+    int frame,
+    int horizonFrames,
+    VehicleType mode,
+    bool dual
+) {
+    std::vector<std::set<SearchInput>> candidates;
+    candidates.reserve(260);
+    candidates.emplace_back();
+
+    static constexpr int offsets[] = {
+        0, 1, 2, 4, 6, 8, 12, 16, 24, 36, 48, 72, 96, 144, 192
+    };
+    static constexpr int windows[] = {
+        2, 4, 6, 8, 12, 16, 24, 36, 48, 72
+    };
+
+    for (int offset : offsets) {
+        std::set<SearchInput> one;
+        addToggle(one, frame, horizonFrames, offset, false);
+        candidates.push_back(std::move(one));
+    }
+
+    for (int start : offsets) {
+        if (start > 96)
+            break;
+        for (int width : windows) {
+            if (start + width >= horizonFrames)
+                continue;
+            std::set<SearchInput> pulse;
+            addToggle(pulse, frame, horizonFrames, start, false);
+            addToggle(pulse, frame, horizonFrames, start + width, false);
+            candidates.push_back(std::move(pulse));
+        }
+    }
+
+    if (flightMode(mode)) {
+        static constexpr int halfPeriods[] = {
+            4, 6, 8, 10, 12, 16, 20, 24, 30, 36, 48
+        };
+        int patternWindow = std::min(horizonFrames, 600);
+
+        for (int halfPeriod : halfPeriods) {
+            for (int phase : {0, halfPeriod / 2}) {
+                std::set<SearchInput> rhythm;
+                int toggles = 0;
+                for (int t = phase; t < patternWindow && toggles < 28; t += halfPeriod) {
+                    addToggle(rhythm, frame, horizonFrames, t, false);
+                    ++toggles;
+                }
+                candidates.push_back(std::move(rhythm));
+            }
+        }
+
+        for (int start : {0, 8, 16, 24, 36, 48, 72, 96}) {
+            for (int width : {12, 18, 24, 30, 36, 48, 60, 84}) {
+                if (start + width >= horizonFrames)
+                    continue;
+                std::set<SearchInput> correction;
+                addToggle(correction, frame, horizonFrames, start, false);
+                addToggle(correction, frame, horizonFrames, start + width, false);
+                candidates.push_back(std::move(correction));
+            }
+        }
+    } else if (mode == VehicleType::Robot) {
+        // Robot jump height is controlled by how long the button stays held.
+        // Its boost lasts roughly 0.15 seconds at 240 TPS, so deliberately cover
+        // the useful 1..36 frame hold range instead of hoping random toggles land there.
+        for (int start : {0, 1, 2, 4, 6, 8, 12, 16, 24, 36, 48, 72, 96, 120}) {
+            for (int hold : {1, 2, 4, 6, 8, 12, 16, 20, 24, 30, 36}) {
+                if (start + hold >= horizonFrames)
+                    continue;
+                std::set<SearchInput> jump;
+                addToggle(jump, frame, horizonFrames, start, false);
+                addToggle(jump, frame, horizonFrames, start + hold, false);
+                candidates.push_back(std::move(jump));
+            }
+        }
+    }
+
+    if (dual) {
+        size_t mirrorCount = std::min<size_t>(candidates.size(), 48);
+        for (size_t i = 0; i < mirrorCount; ++i) {
+            std::set<SearchInput> p2;
+            for (SearchInput key : candidates[i]) {
+                uint32_t inputFrame = key >> 1;
+                p2.insert(inputKey(inputFrame, true));
+            }
+            candidates.push_back(std::move(p2));
+        }
+    }
+
+    return candidates;
+}
+
+static int workerCountFor(size_t candidateCount) {
+    if (candidateCount <= 1)
+        return 1;
+    unsigned int reported = std::thread::hardware_concurrency();
+    if (reported == 0)
+        reported = 4;
+    return static_cast<int>(std::min<size_t>(
+        candidateCount,
+        std::clamp<unsigned int>(reported, 2, 10)
+    ));
+}
+
+static std::vector<TrialResult> evaluateCandidatesParallel(
+    Level2 const& base,
+    std::vector<std::set<SearchInput>> const& candidates,
+    int horizonFrames,
+    std::atomic_bool& stop,
+    int& workersUsed
+) {
+    std::vector<TrialResult> results(candidates.size());
+    if (candidates.empty()) {
+        workersUsed = 1;
+        return results;
+    }
+
+    workersUsed = workerCountFor(candidates.size());
+    if (workersUsed <= 1) {
+        Level2 worker = base;
+        worker.fixStatePointers();
+        for (size_t i = 0; i < candidates.size() && !stop.load(); ++i)
+            results[i] = tryInputs(worker, candidates[i], horizonFrames);
+        return results;
+    }
+
+    std::atomic<size_t> next {0};
+    std::vector<std::thread> threads;
+    threads.reserve(static_cast<size_t>(workersUsed));
+
+    for (int workerIndex = 0; workerIndex < workersUsed; ++workerIndex) {
+        threads.emplace_back([&] {
+            Level2 worker = base;
+            worker.fixStatePointers();
+
+            while (!stop.load()) {
+                size_t index = next.fetch_add(1, std::memory_order_relaxed);
+                if (index >= candidates.size())
+                    break;
+                results[index] = tryInputs(worker, candidates[index], horizonFrames);
+            }
+        });
+    }
+
+    for (auto& thread : threads)
+        thread.join();
+
+    return results;
 }
 
 PathfinderResult pathfind(
@@ -592,36 +835,55 @@ PathfinderResult pathfind(
     int hardestSearchLevel = 0;
     int recoveredExceptions = 0;
     int deadCandidatesRejected = 0;
+    int randomFallbacks = 0;
+    int structuredWins = 0;
+    int debugSearchLevel = 0;
+    int debugHorizon = 0;
+    int debugCandidateCount = 0;
+    int debugWorkers = 1;
+    int debugVehicleType = static_cast<int>(lvl.latestState().vehicle.type);
+    uint64_t totalTrials = 0;
 
     float furthestX = lvl.latestState().pos.x;
+    float lastDeathX = 0.f;
+    float debugClearance = 0.f;
     Timeline bestPlayable(lvl);
-    double lastReportedProgress = -1.0;
 
-    auto emitProgress = [&](char const* reason) {
+    auto emitTelemetry = [&](int phase, char const* reason) {
         if (!callback)
             return;
-        double progress = progressFor(
+
+        PathfinderTelemetry telemetry;
+        telemetry.progress = progressFor(
             furthestX,
             solveStartX,
             lvl.length,
             reachedGoal(lvl)
         );
-        if (!reachedGoal(lvl) && progress < lastReportedProgress + 0.10)
-            return;
-        lastReportedProgress = progress;
-
-        PathfinderTelemetry telemetry;
-        telemetry.progress = progress;
         telemetry.startX = solveStartX;
         telemetry.currentX = lvl.latestState().pos.x;
         telemetry.furthestX = furthestX;
         telemetry.trustedEndX = hasTrustedEnd ? trustedEndX : 0.f;
         telemetry.inferredLength = simulatorLength;
+        telemetry.checkpointX = bestPlayable.x();
+        telemetry.deathX = lastDeathX;
+        telemetry.deathProgress = static_cast<float>(progressFor(
+            lastDeathX,
+            solveStartX,
+            lvl.length,
+            false
+        ));
+        telemetry.bestClearance = debugClearance;
         telemetry.frame = lvl.currentFrame();
         telemetry.checkpointFrame = bestPlayable.frame();
-        telemetry.checkpointX = bestPlayable.x();
-        telemetry.deathX = lvl.latestState().dead ? lvl.latestState().pos.x : 0.f;
-        telemetry.mode = "classic-dynamic-live";
+        telemetry.vehicleType = debugVehicleType;
+        telemetry.searchLevel = debugSearchLevel;
+        telemetry.horizonFrames = debugHorizon;
+        telemetry.candidateCount = debugCandidateCount;
+        telemetry.workerCount = debugWorkers;
+        telemetry.phase = phase;
+        telemetry.totalTrials = totalTrials;
+        telemetry.mode = "parallel-safety";
         telemetry.recoveryReason = reason;
         callback(telemetry);
     };
@@ -637,12 +899,11 @@ PathfinderResult pathfind(
                  static_cast<uint32_t>(lvl.currentFrame()));
     };
 
-    // No failure-count exit exists. Completion or the user's Stop button are the
-    // only intended ways out. Search-time exceptions recover to the saved live route.
     while (!reachedGoal(lvl) && !stop.load()) {
         try {
             if (lvl.latestState().dead) {
                 recoverFromBest(std::min(2880, 240 + recoveryCount * 240));
+                emitTelemetry(2, "recover-dead-state");
                 continue;
             }
 
@@ -651,84 +912,142 @@ PathfinderResult pathfind(
             int searchLevel = std::min(12, recoveryCount + stagnantRounds / 4);
             hardestSearchLevel = std::max(hardestSearchLevel, searchLevel);
 
-            int horizonFrames = 1000 + searchLevel * 100;
-            if (mode == VehicleType::Ship ||
-                mode == VehicleType::Wave ||
-                mode == VehicleType::Swing) {
-                horizonFrames += 200;
-            }
-            horizonFrames = std::min(horizonFrames, 2400);
+            int horizonFrames = 720 + searchLevel * 80;
+            if (flightMode(mode))
+                horizonFrames += 240;
+            else if (mode == VehicleType::Robot)
+                horizonFrames += 120;
+            horizonFrames = std::min(horizonFrames, 1920);
 
-            int iterations = std::min(2100, 300 + searchLevel * 150);
-            int nearWindow = std::min(horizonFrames, 180 + searchLevel * 55);
-            std::uniform_int_distribution<int> farFrame(0, horizonFrames - 1);
-            std::uniform_int_distribution<int> nearFrame(0, std::max(0, nearWindow - 1));
+            bool dual = lvl.latestState().dualActive;
+            auto candidates = structuredCandidates(frame, horizonFrames, mode, dual);
+
+            debugVehicleType = static_cast<int>(mode);
+            debugSearchLevel = searchLevel;
+            debugHorizon = horizonFrames;
+            debugCandidateCount = static_cast<int>(candidates.size());
+            debugClearance = 0.f;
+            emitTelemetry(0, "structured-search");
+
+            int workersUsed = 1;
+            auto results = evaluateCandidatesParallel(
+                lvl,
+                candidates,
+                horizonFrames,
+                stop,
+                workersUsed
+            );
+            debugWorkers = workersUsed;
+            totalTrials += results.size();
 
             std::set<SearchInput> bestInputs;
             TrialResult bestTrial {
                 frame,
                 lvl.latestState().pos.x,
+                0.f,
+                0.f,
                 false,
                 false
             };
             bool haveBest = false;
             size_t bestToggleCount = std::numeric_limits<size_t>::max();
 
-            for (int attempt = 0; attempt < iterations && !stop.load(); ++attempt) {
-                std::set<SearchInput> inputs;
-                bool dual = lvl.latestState().dualActive;
+            auto consumeBatch = [&](auto const& batchCandidates, auto const& batchResults) {
+                size_t count = std::min(batchCandidates.size(), batchResults.size());
+                for (size_t i = 0; i < count; ++i) {
+                    auto const& trial = batchResults[i];
+                    if (trial.dead)
+                        lastDeathX = std::max(lastDeathX, trial.deathX);
+
+                    if (!betterTrial(
+                            trial,
+                            batchCandidates[i].size(),
+                            haveBest,
+                            bestTrial,
+                            bestToggleCount,
+                            mode
+                        )) {
+                        if (trial.dead && haveBest && !bestTrial.dead)
+                            ++deadCandidatesRejected;
+                        continue;
+                    }
+
+                    bestTrial = trial;
+                    bestToggleCount = batchCandidates[i].size();
+                    bestInputs = batchCandidates[i];
+                    haveBest = true;
+                }
+            };
+
+            consumeBatch(candidates, results);
+
+            bool structuredStrong =
+                haveBest &&
+                !bestTrial.dead &&
+                bestTrial.frame >= frame + horizonFrames - 2 &&
+                (bestTrial.complete ||
+                 bestTrial.minClearance >= (flightMode(mode) ? 5.5f : 2.5f));
+
+            if (structuredStrong) {
+                ++structuredWins;
+            } else if (!stop.load()) {
+                ++randomFallbacks;
+                int randomCount = std::min(620, 90 + searchLevel * 45);
+                std::vector<std::set<SearchInput>> randomCandidates;
+                randomCandidates.reserve(static_cast<size_t>(randomCount));
+
+                int nearWindow = std::min(horizonFrames, 160 + searchLevel * 45);
+                std::uniform_int_distribution<int> farFrame(0, horizonFrames - 1);
+                std::uniform_int_distribution<int> nearFrame(0, std::max(0, nearWindow - 1));
                 int extraToggles = searchLevel * 2;
                 int maxP1 = maxToggleBudget(mode) + extraToggles;
                 int maxP2 = dual
                     ? maxToggleBudget(lvl.latestState2().vehicle.type) + extraToggles
                     : 0;
-
                 std::uniform_int_distribution<int> p1Budget(0, maxP1);
                 std::uniform_int_distribution<int> p2Budget(0, maxP2);
-                int p1Candidates = p1Budget(rng);
-                int p2Candidates = p2Budget(rng);
 
-                auto candidateFrame = [&](int index) -> uint32_t {
-                    bool near = searchLevel > 0 && ((attempt + index) % 4 != 0);
-                    int offset = near ? nearFrame(rng) : farFrame(rng);
-                    return static_cast<uint32_t>(frame + offset);
-                };
+                for (int attempt = 0; attempt < randomCount; ++attempt) {
+                    std::set<SearchInput> inputs;
+                    int p1Candidates = p1Budget(rng);
+                    int p2Candidates = p2Budget(rng);
 
-                for (int i = 0; i < p1Candidates; ++i)
-                    inputs.insert(inputKey(candidateFrame(i), false));
-                for (int i = 0; i < p2Candidates; ++i)
-                    inputs.insert(inputKey(candidateFrame(i + p1Candidates), true));
+                    auto candidateFrame = [&](int index) -> uint32_t {
+                        bool useNear = searchLevel > 0 && ((attempt + index) % 5 != 0);
+                        int offset = useNear ? nearFrame(rng) : farFrame(rng);
+                        return static_cast<uint32_t>(frame + offset);
+                    };
 
-                TrialResult trial = tryInputs(lvl, inputs, horizonFrames);
-                if (!betterTrial(
-                        trial,
-                        inputs.size(),
-                        haveBest,
-                        bestTrial,
-                        bestToggleCount
-                    )) {
-                    if (trial.dead && haveBest && !bestTrial.dead)
-                        ++deadCandidatesRejected;
-                    continue;
+                    for (int i = 0; i < p1Candidates; ++i)
+                        inputs.insert(inputKey(candidateFrame(i), false));
+                    for (int i = 0; i < p2Candidates; ++i)
+                        inputs.insert(inputKey(candidateFrame(i + p1Candidates), true));
+                    randomCandidates.push_back(std::move(inputs));
                 }
 
-                bestTrial = trial;
-                bestToggleCount = inputs.size();
-                bestInputs = std::move(inputs);
-                haveBest = true;
+                debugCandidateCount = static_cast<int>(
+                    candidates.size() + randomCandidates.size()
+                );
+                emitTelemetry(1, "random-fallback");
 
-                if (bestTrial.complete && bestToggleCount <= 2)
-                    break;
-                if (!bestTrial.dead &&
-                    bestTrial.frame - frame >= horizonFrames &&
-                    bestToggleCount <= 2 &&
-                    attempt > 40) {
-                    break;
-                }
+                int randomWorkers = 1;
+                auto randomResults = evaluateCandidatesParallel(
+                    lvl,
+                    randomCandidates,
+                    horizonFrames,
+                    stop,
+                    randomWorkers
+                );
+                debugWorkers = std::max(debugWorkers, randomWorkers);
+                totalTrials += randomResults.size();
+                consumeBatch(randomCandidates, randomResults);
             }
 
             if (stop.load())
                 break;
+
+            debugClearance = haveBest ? bestTrial.minClearance : 0.f;
+            emitTelemetry(1, "candidate-selected");
 
             if (!haveBest || bestTrial.frame <= frame) {
                 ++recoveryCount;
@@ -758,6 +1077,7 @@ PathfinderResult pathfind(
                 } else if (fail > 100) {
                     fail += 50;
                 }
+                emitTelemetry(2, "rollback-no-advance");
                 continue;
             }
 
@@ -766,11 +1086,11 @@ PathfinderResult pathfind(
                 applyUntil = bestTrial.frame;
             } else if (!bestTrial.dead) {
                 int advance = bestTrial.frame - frame;
-                applyUntil = bestTrial.frame - static_cast<int>(advance / 1.5);
+                int divisor = flightMode(mode) || mode == VehicleType::Robot ? 2 : 1;
+                int safetyTail = std::max(12, advance / (divisor + 2));
+                applyUntil = std::max(frame + 1, bestTrial.frame - safetyTail);
             } else {
-                // Every sampled route died. A doomed trial may contribute only a
-                // conservative prefix far before its death, never the death approach itself.
-                int deathBuffer = std::min(240, 90 + searchLevel * 10);
+                int deathBuffer = std::min(300, 110 + searchLevel * 12);
                 int safeEnd = std::max(frame, bestTrial.frame - deathBuffer);
                 int safeAdvance = safeEnd - frame;
                 applyUntil = frame + safeAdvance / 2;
@@ -779,6 +1099,7 @@ PathfinderResult pathfind(
 
             if (applyUntil <= frame) {
                 recoverFromBest(std::min(2880, 240 + recoveryCount * 240));
+                emitTelemetry(2, "recover-zero-prefix");
                 continue;
             }
 
@@ -794,7 +1115,9 @@ PathfinderResult pathfind(
             }
 
             if (lvl.latestState().dead) {
+                lastDeathX = std::max(lastDeathX, lvl.latestState().pos.x);
                 recoverFromBest(std::min(2880, 360 + recoveryCount * 240));
+                emitTelemetry(2, "recover-applied-death");
                 continue;
             }
 
@@ -804,44 +1127,43 @@ PathfinderResult pathfind(
                 numAway = 1000;
             }
 
-            // The exported route and displayed progress now use the exact same state.
-            // A farther live X atomically replaces both; mere frame count cannot do it.
             bool advancedX = lvl.latestState().pos.x > furthestX + 1.f;
             if (advancedX || reachedGoal(lvl)) {
                 furthestX = std::max(furthestX, lvl.latestState().pos.x);
                 bestPlayable.capture(lvl);
                 stagnantRounds = 0;
                 recoveryCount = std::max(0, recoveryCount - 2);
-                emitProgress(reachedGoal(lvl) ? "complete" : "advance");
+                emitTelemetry(3, reachedGoal(lvl) ? "complete" : "advance");
             } else if (lvl.latestState().direction < 0) {
                 stagnantRounds = 0;
             } else {
                 ++stagnantRounds;
             }
 
-            if (stagnantRounds >= 12 &&
+            if (stagnantRounds >= 10 &&
                 bestPlayable.frame() > 2 &&
                 lvl.latestState().direction >= 0) {
                 int retreat = std::min(
                     bestPlayable.frame() - 1,
-                    480 * (1 + std::min(recoveryCount, 10))
+                    420 * (1 + std::min(recoveryCount, 10))
                 );
                 recoverFromBest(retreat);
                 stagnantRounds = 0;
                 fail = 1;
                 numAway = std::min(8000, 1000 + recoveryCount * 500);
+                emitTelemetry(2, "recover-stagnation");
             }
         } catch (std::exception const&) {
             ++recoveredExceptions;
             recoverFromBest(std::min(3600, 480 + recoveredExceptions * 240));
+            emitTelemetry(2, "recover-exception");
         } catch (...) {
             ++recoveredExceptions;
             recoverFromBest(std::min(3600, 480 + recoveredExceptions * 240));
+            emitTelemetry(2, "recover-unknown-exception");
         }
     }
 
-    // Never let the current recovery position replace the saved route on exit.
-    // Stop always returns the furthest confirmed-live timeline found so far.
     if (reachedGoal(lvl) && !lvl.latestState().dead) {
         furthestX = std::max(furthestX, lvl.latestState().pos.x);
         bestPlayable.capture(lvl);
@@ -902,7 +1224,7 @@ PathfinderResult pathfind(
 
     std::ostringstream diagnostics;
     diagnostics
-        << "solver=classic-dynamic-live"
+        << "solver=parallel-safety"
         << " progress=" << result.progress
         << " frame=" << bestPlayable.frame()
         << " routeX=" << bestPlayable.x()
@@ -911,7 +1233,13 @@ PathfinderResult pathfind(
         << " recoveryCount=" << recoveryCount
         << " fullRestarts=" << fullRestarts
         << " hardestSearch=" << hardestSearchLevel
+        << " totalTrials=" << totalTrials
+        << " workers=" << debugWorkers
+        << " structuredWins=" << structuredWins
+        << " randomFallbacks=" << randomFallbacks
         << " deadCandidatesRejected=" << deadCandidatesRejected
+        << " lastDeathX=" << lastDeathX
+        << " bestClearance=" << debugClearance
         << " recoveredExceptions=" << recoveredExceptions
         << " moveTriggers=" << lvl.supportedMoveTriggers
         << " unsupportedMoves=" << lvl.unsupportedMoveTriggers
