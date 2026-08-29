@@ -9,18 +9,19 @@ project(pathfinder VERSION 1.0.0)
 add_library(${PROJECT_NAME} SHARED
     src/main.cpp
     src/creator.cpp
-    src/pathfinder_team_v5.cpp
+    src/pathfinder_state_v7.cpp
     src/flappy.cpp
     src/checker.cpp
     src/debug.cpp
     # Add any extra C++ source files here
 )
 
-# v5 includes the v4 hard-negative controller and adds an end-to-end replay
-# validation gate before a run is allowed to report 100% complete.
+# V7 replaces the old candidate-script/champion controller with a state-space
+# beam search. The UI still calls pathfind through the public header; only main.cpp
+# is remapped to the new controller symbol.
 set_source_files_properties(
     src/main.cpp
-    PROPERTIES COMPILE_DEFINITIONS "pathfind=pathfind_v5"
+    PROPERTIES COMPILE_DEFINITIONS "pathfind=pathfind_v7"
 )
 
 if (NOT DEFINED ENV{GEODE_SDK})
