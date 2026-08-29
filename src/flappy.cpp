@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <random>
+#include <string>
 #include <vector>
 
 #include "flappy.hpp"
@@ -103,7 +104,9 @@ public:
             .move(42.f, 0.f)
             .parent(menu);
 
-        schedule(schedule_selector(PathfinderFlappy::tick));
+        Build(this).schedule([this](float dt) {
+            tick(dt);
+        });
         return true;
     }
 
@@ -116,17 +119,6 @@ private:
                 pipe.bottom->removeFromParentAndCleanup(true);
         }
         m_pipes.clear();
-    }
-
-    void resetGame() {
-        clearPipes();
-        m_velocity = 0.f;
-        m_spawnTimer = 0.f;
-        m_score = 0;
-        m_running = false;
-        m_bird->setPosition({m_birdX, m_bottom + kHeight * 0.5f});
-        m_scoreLabel->setString("0");
-        m_hintLabel->setString("FLAP to start");
     }
 
     void flap() {
@@ -242,7 +234,7 @@ private:
 
 } // namespace
 
-void togglePathfinderFlappy(CCNode* parent) {
+void togglePathfinderFlappy(cocos2d::CCNode* parent) {
     if (!parent)
         return;
 
