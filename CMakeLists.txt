@@ -9,7 +9,7 @@ project(pathfinder VERSION 1.0.0)
 add_library(${PROJECT_NAME} SHARED
     src/main.cpp
     src/creator.cpp
-    src/pathfinder_state_v13.cpp
+    src/pathfinder_single.cpp
     src/solver_dashboard.cpp
     src/flappy.cpp
     src/checker.cpp
@@ -17,14 +17,9 @@ add_library(${PROJECT_NAME} SHARED
     # Add any extra C++ source files here
 )
 
-# V13 keeps 100 logical helpers as ten trainer teams of ten, but recovery only
-# deepens when it finds a physically earlier anchor. Forward recovery progress
-# is preserved, SAFE is frozen rather than replaced by rollback, and Stop keeps
-# the best living partial route found so far.
-set_source_files_properties(
-    src/main.cpp
-    PROPERTIES COMPILE_DEFINITIONS "pathfind=pathfind_v13"
-)
+# Clean single-controller Pathfinder. The V7-V13 helper/team experiments are
+# intentionally outside the active build. pathfinder_single.cpp wraps the plain
+# all-game-mode Pathfinder with bounded no-progress retries and Stop preservation.
 
 if (NOT DEFINED ENV{GEODE_SDK})
     message(FATAL_ERROR "Please define GEODE_SDK environment variable to point to Geode")
