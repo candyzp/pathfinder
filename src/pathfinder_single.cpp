@@ -36,6 +36,22 @@ bool betterPartialV14(PathfinderResult const& candidate, PathfinderResult const&
     return candidate.inputs.size() < current.inputs.size();
 }
 
+std::string attemptStatusV14(
+    int attempt,
+    std::string const& baseReason,
+    int evaluatorThreads,
+    double bestProgress
+) {
+    std::ostringstream out;
+    out.setf(std::ios::fixed);
+    out.precision(2);
+    out << "attempt " << attempt << "/" << kMaxFreshAttemptsV14
+        << " | " << (baseReason.empty() ? "searching" : baseReason)
+        << " | evaluator threads " << evaluatorThreads
+        << " | best " << bestProgress << "%";
+    return out.str();
+}
+
 } // namespace
 
 PathfinderResult pathfind(
@@ -130,11 +146,9 @@ PathfinderResult pathfind(
                 telemetry.decision = stalled
                     ? "No real X progress: ending this search attempt cleanly"
                     : "Single Pathfinder choosing one route";
-                telemetry.recoveryReason = fmt::format(
-                    "attempt {}/{} | {} | evaluator threads {} | best {:.2f}%",
+                telemetry.recoveryReason = attemptStatusV14(
                     attempt + 1,
-                    kMaxFreshAttemptsV14,
-                    incoming.recoveryReason.empty() ? "searching" : incoming.recoveryReason,
+                    incoming.recoveryReason,
                     std::max(1, incoming.workerCount),
                     globalBestProgress
                 );
@@ -181,10 +195,10 @@ PathfinderResult pathfind(
             telemetry.totalTrials = 0;
             telemetry.mode = "single-pathfinder-v14";
             telemetry.decision = "Restarting one clean Pathfinder search";
-            telemetry.recoveryReason = fmt::format(
-                "attempt {} saturated without real X progress; keeping the best partial route and retrying with a fresh seed",
-                attempt + 1
-            );
+            std::ostringstream reason;
+            reason << "attempt " << (attempt + 1)
+                   << " saturated without real X progress; keeping the best partial route and retrying with a fresh seed";
+            telemetry.recoveryReason = reason.str();
             callback(telemetry);
         }
     }
