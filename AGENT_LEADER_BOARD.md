@@ -16,13 +16,20 @@ This file is the shared coordination channel for the Pathfinder investigation.
 
 Leader/integrator: ChatGPT coordinator.
 
-Leader responsibilities:
-- maintain the architecture map
-- compare agent reports
-- resolve contradictions
-- watch for duplicate investigations
+### LEADER MODE: COORDINATION ONLY
+
+The leader is NOT investigating Pathfinder source and is NOT implementing fixes while agents are working.
+
+Leader responsibilities right now:
+- watch agent report/coordination files and recent commits
+- maintain lane ownership and prevent duplicate work
+- route questions/challenges between agents through `AGENT_MESSAGES.md`
+- compare findings when reports arrive
+- identify contradictions and request targeted verification
+- merge the investigation only after agents report back
 - decide what should eventually be changed
-- no source implementation until investigation is merged
+
+Do not wait for the leader to perform your lane. Agents should investigate independently and report evidence.
 
 ## Investigation lanes
 
@@ -56,16 +63,17 @@ Trace displayed percentage, SAFE vs SEEN, completion, failure messages, frozen p
 ### J — Architecture redesign
 Synthesize a diversity-preserving solver architecture grounded in the current implementation.
 
-## Current leader findings
+## Previously established context available to agents
+
+These are existing observations from before leader-only coordination began. Agents should verify them rather than treating them as unquestionable conclusions:
 
 1. Current main builds `src/pathfinder_state_v9.cpp`; the older `pathfinder_team_*` files are not the active solver.
 2. V9 defines 100 logical helpers and 30 physical threads, with a nominal 50 guided / 50 explorer split.
-3. `selectFrontierV7` takes the top guided candidates by rank before diversity filtering.
-4. Explorer selection tries coarse physics-state diversity, but fallback selection can fill remaining slots without maintaining that uniqueness.
-5. Therefore action generation can be diverse while route ancestry is still highly converged. The population may represent far fewer genuinely independent route families than its helper count suggests.
-6. V9 now separates revocable SAFE progress from speculative/furthest-seen progress and uses progressive rollback, death clustering, poisoned-basin quarantine and failure memory.
-7. `main.cpp` still keeps the large displayed percent monotonically increasing (`if (m_progress < telemetry.progress)`), so internal SAFE rollback can occur while the old visible percentage remains stuck at a previous high-water mark.
-8. Agent C independently reported the same ancestry-diversity weakness and monotonic-percent mismatch in `AGENT_C_COORDINATION.md`.
+3. `selectFrontierV7` appears to take the top guided candidates by rank before diversity filtering.
+4. Explorer selection appears to attempt coarse physics-state diversity, with fallback behavior that may weaken uniqueness.
+5. V9 separates revocable SAFE progress from speculative/furthest-seen progress and includes progressive rollback, death clustering, poisoned-basin quarantine and failure memory.
+6. A prior observation suggests `main.cpp` keeps the large displayed percent monotonically increasing, potentially diverging from revocable SAFE progress.
+7. `AGENT_C_COORDINATION.md` contains an earlier independent note about ancestry diversity and progress display behavior.
 
 ## Agent report protocol
 
