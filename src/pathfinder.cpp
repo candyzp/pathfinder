@@ -477,7 +477,7 @@ static int maxToggleBudget(VehicleType type) {
         case VehicleType::Ufo:    return 14;
         case VehicleType::Wave:   return 24;
         case VehicleType::Robot:  return 12;
-        case VehicleType::Spider: return 10;
+        case VehicleType::Spider: return 8;
         case VehicleType::Swing:  return 20;
     }
     return 12;
@@ -543,16 +543,9 @@ static TrialResult tryInputs(
 
         if (!lvl.latestState().dead &&
             (lvl.currentFrame() - startFrame) % clearanceStride == 0) {
-            minClearance = std::min(
-                minClearance,
-                hazardClearance(lvl, lvl.latestState())
-            );
-            if (lvl.latestState().dualActive) {
-                minClearance = std::min(
-                    minClearance,
-                    hazardClearance(lvl, lvl.latestState2())
-                );
-            }
+            minClearance = std::min(minClearance, hazardClearance(lvl, lvl.latestState()));
+            if (lvl.latestState().dualActive)
+                minClearance = std::min(minClearance, hazardClearance(lvl, lvl.latestState2()));
         }
     }
 
@@ -606,7 +599,6 @@ static bool betterTrial(
 
     if (trial.complete != best.complete)
         return trial.complete;
-
     if (trial.dead != best.dead)
         return !trial.dead;
 
@@ -620,7 +612,9 @@ static bool betterTrial(
 
     float progressBand = flightMode(mode)
         ? 42.f
-        : mode == VehicleType::Robot ? 28.f : 16.f;
+        : mode == VehicleType::Robot ? 28.f
+        : mode == VehicleType::Spider ? 20.f
+        : 16.f;
     float xDelta = trial.x - best.x;
     if (std::abs(xDelta) > progressBand)
         return xDelta > 0.f;
@@ -628,7 +622,8 @@ static bool betterTrial(
     float clearanceDelta = trial.minClearance - best.minClearance;
     float clearanceBand = flightMode(mode)
         ? 1.5f
-        : mode == VehicleType::Robot ? 1.0f : 0.75f;
+        : mode == VehicleType::Robot ? 1.0f
+        : 0.75f;
     if (std::abs(clearanceDelta) > clearanceBand)
         return clearanceDelta > 0.f;
 
@@ -655,10 +650,11 @@ static std::vector<std::set<SearchInput>> structuredCandidates(
     int frame,
     int horizonFrames,
     VehicleType mode,
-    bool dual
+    bool dual,
+    bool heldP1
 ) {
     std::vector<std::set<SearchInput>> candidates;
-    candidates.reserve(260);
+    candidates.reserve(340);
     candidates.emplace_back();
 
     static constexpr int offsets[] = {
@@ -716,9 +712,6 @@ static std::vector<std::set<SearchInput>> structuredCandidates(
             }
         }
     } else if (mode == VehicleType::Robot) {
-        // Robot jump height is controlled by how long the button stays held.
-        // Its boost lasts roughly 0.15 seconds at 240 TPS, so deliberately cover
-        // the useful 1..36 frame hold range instead of hoping random toggles land there.
         for (int start : {0, 1, 2, 4, 6, 8, 12, 16, 24, 36, 48, 72, 96, 120}) {
             for (int hold : {1, 2, 4, 6, 8, 12, 16, 20, 24, 30, 36}) {
                 if (start + hold >= horizonFrames)
@@ -728,6 +721,41 @@ static std::vector<std::set<SearchInput>> structuredCandidates(
                 addToggle(jump, frame, horizonFrames, start + hold, false);
                 candidates.push_back(std::move(jump));
             }
+        }
+    } else if (mode == VehicleType::Spider) {
+        // Spider only teleports on fresh press edges. Generate explicit click chains
+        // with a release after every press, and normalize a held button first so a
+        // portal entered while holding cannot poison the whole search window.
+        static constexpr int periods[] = {12, 18, 24, 30, 36, 48, 60, 72, 96, 120};
+        static constexpr int pulseWidths[] = {1, 2, 3, 4, 6};
+        int patternWindow = std::min(horizonFrames, 720);
+
+        for (int period : periods) {
+            for (int pulse : pulseWidths) {
+                for (int phase : {0, period / 3}) {
+                    std::set<SearchInput> clicks;
+                    if (heldP1)
+                        addToggle(clicks, frame, horizonFrames, 0, false);
+
+                    int start = phase + (heldP1 ? 2 : 0);
+                    for (int t = start; t + pulse < patternWindow; t += period) {
+                        addToggle(clicks, frame, horizonFrames, t, false);
+                        addToggle(clicks, frame, horizonFrames, t + pulse, false);
+                    }
+                    candidates.push_back(std::move(clicks));
+                }
+            }
+        }
+
+        for (int start : {0, 1, 2, 4, 6, 8, 12, 16, 24, 36, 48, 72, 96}) {
+            std::set<SearchInput> click;
+            if (heldP1) {
+                addToggle(click, frame, horizonFrames, 0, false);
+                start = std::max(start, 2);
+            }
+            addToggle(click, frame, horizonFrames, start, false);
+            addToggle(click, frame, horizonFrames, start + 1, false);
+            candidates.push_back(std::move(click));
         }
     }
 
@@ -754,7 +782,7 @@ static int workerCountFor(size_t candidateCount) {
         reported = 4;
     return static_cast<int>(std::min<size_t>(
         candidateCount,
-        std::clamp<unsigned int>(reported, 2, 10)
+        std::clamp<unsigned int>(reported, 2, 6)
     ));
 }
 
@@ -854,12 +882,7 @@ PathfinderResult pathfind(
             return;
 
         PathfinderTelemetry telemetry;
-        telemetry.progress = progressFor(
-            furthestX,
-            solveStartX,
-            lvl.length,
-            reachedGoal(lvl)
-        );
+        telemetry.progress = progressFor(furthestX, solveStartX, lvl.length, reachedGoal(lvl));
         telemetry.startX = solveStartX;
         telemetry.currentX = lvl.latestState().pos.x;
         telemetry.furthestX = furthestX;
@@ -867,12 +890,7 @@ PathfinderResult pathfind(
         telemetry.inferredLength = simulatorLength;
         telemetry.checkpointX = bestPlayable.x();
         telemetry.deathX = lastDeathX;
-        telemetry.deathProgress = static_cast<float>(progressFor(
-            lastDeathX,
-            solveStartX,
-            lvl.length,
-            false
-        ));
+        telemetry.deathProgress = static_cast<float>(progressFor(lastDeathX, solveStartX, lvl.length, false));
         telemetry.bestClearance = debugClearance;
         telemetry.frame = lvl.currentFrame();
         telemetry.checkpointFrame = bestPlayable.frame();
@@ -917,10 +935,18 @@ PathfinderResult pathfind(
                 horizonFrames += 240;
             else if (mode == VehicleType::Robot)
                 horizonFrames += 120;
+            else if (mode == VehicleType::Spider)
+                horizonFrames = std::min(horizonFrames, 1200);
             horizonFrames = std::min(horizonFrames, 1920);
 
             bool dual = lvl.latestState().dualActive;
-            auto candidates = structuredCandidates(frame, horizonFrames, mode, dual);
+            auto candidates = structuredCandidates(
+                frame,
+                horizonFrames,
+                mode,
+                dual,
+                lvl.press1
+            );
 
             debugVehicleType = static_cast<int>(mode);
             debugSearchLevel = searchLevel;
@@ -930,25 +956,12 @@ PathfinderResult pathfind(
             emitTelemetry(0, "structured-search");
 
             int workersUsed = 1;
-            auto results = evaluateCandidatesParallel(
-                lvl,
-                candidates,
-                horizonFrames,
-                stop,
-                workersUsed
-            );
+            auto results = evaluateCandidatesParallel(lvl, candidates, horizonFrames, stop, workersUsed);
             debugWorkers = workersUsed;
             totalTrials += results.size();
 
             std::set<SearchInput> bestInputs;
-            TrialResult bestTrial {
-                frame,
-                lvl.latestState().pos.x,
-                0.f,
-                0.f,
-                false,
-                false
-            };
+            TrialResult bestTrial {frame, lvl.latestState().pos.x, 0.f, 0.f, false, false};
             bool haveBest = false;
             size_t bestToggleCount = std::numeric_limits<size_t>::max();
 
@@ -957,7 +970,7 @@ PathfinderResult pathfind(
                 for (size_t i = 0; i < count; ++i) {
                     auto const& trial = batchResults[i];
                     if (trial.dead)
-                        lastDeathX = std::max(lastDeathX, trial.deathX);
+                        lastDeathX = trial.deathX;
 
                     if (!betterTrial(
                             trial,
@@ -981,18 +994,24 @@ PathfinderResult pathfind(
 
             consumeBatch(candidates, results);
 
+            float strongClearance = flightMode(mode)
+                ? 5.5f
+                : mode == VehicleType::Spider ? 1.5f
+                : 2.5f;
             bool structuredStrong =
                 haveBest &&
                 !bestTrial.dead &&
                 bestTrial.frame >= frame + horizonFrames - 2 &&
-                (bestTrial.complete ||
-                 bestTrial.minClearance >= (flightMode(mode) ? 5.5f : 2.5f));
+                (bestTrial.complete || bestTrial.minClearance >= strongClearance);
 
             if (structuredStrong) {
                 ++structuredWins;
             } else if (!stop.load()) {
                 ++randomFallbacks;
                 int randomCount = std::min(620, 90 + searchLevel * 45);
+                if (mode == VehicleType::Spider)
+                    randomCount = std::min(randomCount, 180);
+
                 std::vector<std::set<SearchInput>> randomCandidates;
                 randomCandidates.reserve(static_cast<size_t>(randomCount));
 
@@ -1025,9 +1044,7 @@ PathfinderResult pathfind(
                     randomCandidates.push_back(std::move(inputs));
                 }
 
-                debugCandidateCount = static_cast<int>(
-                    candidates.size() + randomCandidates.size()
-                );
+                debugCandidateCount = static_cast<int>(candidates.size() + randomCandidates.size());
                 emitTelemetry(1, "random-fallback");
 
                 int randomWorkers = 1;
@@ -1052,11 +1069,7 @@ PathfinderResult pathfind(
             if (!haveBest || bestTrial.frame <= frame) {
                 ++recoveryCount;
                 int preferred = std::max(frame - fail, trueBestFrame - numAway);
-                int target = std::clamp(
-                    preferred,
-                    1,
-                    std::max(1, frame - 1)
-                );
+                int target = std::clamp(preferred, 1, std::max(1, frame - 1));
                 lvl.rollback(target);
                 lvl.syncPresses();
 
@@ -1086,8 +1099,11 @@ PathfinderResult pathfind(
                 applyUntil = bestTrial.frame;
             } else if (!bestTrial.dead) {
                 int advance = bestTrial.frame - frame;
-                int divisor = flightMode(mode) || mode == VehicleType::Robot ? 2 : 1;
-                int safetyTail = std::max(12, advance / (divisor + 2));
+                int safetyDivisor = flightMode(mode) ||
+                    mode == VehicleType::Robot ||
+                    mode == VehicleType::Spider
+                    ? 4 : 5;
+                int safetyTail = std::max(12, advance / safetyDivisor);
                 applyUntil = std::max(frame + 1, bestTrial.frame - safetyTail);
             } else {
                 int deathBuffer = std::min(300, 110 + searchLevel * 12);
@@ -1115,7 +1131,7 @@ PathfinderResult pathfind(
             }
 
             if (lvl.latestState().dead) {
-                lastDeathX = std::max(lastDeathX, lvl.latestState().pos.x);
+                lastDeathX = lvl.latestState().pos.x;
                 recoverFromBest(std::min(2880, 360 + recoveryCount * 240));
                 emitTelemetry(2, "recover-applied-death");
                 continue;
@@ -1178,27 +1194,15 @@ PathfinderResult pathfind(
 
         if (p1.frame > 1 && p1.button != previousP1.button) {
             output.inputs.push_back(gdr::Input(p1.frame, 1, false, p1.button));
-            result.inputs.push_back({
-                static_cast<uint32_t>(p1.frame),
-                false,
-                p1.button,
-                1
-            });
+            result.inputs.push_back({static_cast<uint32_t>(p1.frame), false, p1.button, 1});
         }
 
         if (i < bestPlayable.p2.size()) {
             auto const& p2 = bestPlayable.p2[i];
             auto const& previousP2 = bestPlayable.p2[i - 1];
-            if (p2.dualActive &&
-                p2.frame > 1 &&
-                p2.button != previousP2.button) {
+            if (p2.dualActive && p2.frame > 1 && p2.button != previousP2.button) {
                 output.inputs.push_back(gdr::Input(p2.frame, 1, true, p2.button));
-                result.inputs.push_back({
-                    static_cast<uint32_t>(p2.frame),
-                    true,
-                    p2.button,
-                    1
-                });
+                result.inputs.push_back({static_cast<uint32_t>(p2.frame), true, p2.button, 1});
             }
         }
     }
@@ -1215,12 +1219,7 @@ PathfinderResult pathfind(
 
     result.macro = output.exportData().unwrapOr({});
     result.complete = bestPlayable.complete();
-    result.progress = progressFor(
-        furthestX,
-        solveStartX,
-        lvl.length,
-        result.complete
-    );
+    result.progress = progressFor(furthestX, solveStartX, lvl.length, result.complete);
 
     std::ostringstream diagnostics;
     diagnostics
