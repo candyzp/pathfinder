@@ -10,6 +10,7 @@ add_library(${PROJECT_NAME} SHARED
     src/main.cpp
     src/creator.cpp
     src/pathfinder_single.cpp
+    src/real_geometry.cpp
     src/solver_dashboard.cpp
     src/flappy.cpp
     src/checker.cpp
@@ -18,9 +19,9 @@ add_library(${PROJECT_NAME} SHARED
 )
 
 # Clean single-controller Pathfinder. The V7-V13 helper/team experiments are
-# intentionally outside the active build. V15 keeps all game-mode support while
-# learning repeated timing failures, searching dense dash releases, preserving
-# Stop/debug/Flappy, and bounding no-progress strategy resets.
+# intentionally outside the active build. V16 keeps the V15 learning controller
+# and adds a Show-Hitbox-style real Geometry Dash collision snapshot for the
+# frame-exact Wave trajectory planner.
 
 if (NOT DEFINED ENV{GEODE_SDK})
     message(FATAL_ERROR "Please define GEODE_SDK environment variable to point to Geode")
