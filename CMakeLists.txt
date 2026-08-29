@@ -9,7 +9,7 @@ project(pathfinder VERSION 1.0.0)
 add_library(${PROJECT_NAME} SHARED
     src/main.cpp
     src/creator.cpp
-    src/pathfinder.cpp
+    src/pathfinder_hotfix.cpp
     src/checker.cpp
     src/debug.cpp
     # Add any extra C++ source files here
