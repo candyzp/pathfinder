@@ -1,6 +1,6 @@
 # Pathfinder
 
-Auto-generate macros for levels using simulation! This mod uses a physics simulator under the hood to search for inputs that solve levels. It does not come with a playback bot, so exported macros still need a compatible replay bot.
+Auto-generate inputs for levels using simulation! This mod uses a physics simulator under the hood to search for a route, can apply that route to its built-in autoplay, and can export a macro for compatible replay bots.
 
 # Experimental Gameplay Support
 
@@ -37,8 +37,8 @@ Unsupported decorative, camera, shader and audio objects are intentionally ignor
 
 1. Go to a level you want to pathfind, either in your saved or an online level.
 2. Click the blue Pathfinder button to start the pathfinder.
-3. Export the macro into the correct folder of whichever bot you are using.
-4. Import the macro and play it back.
+3. Leave **Automatically set inputs for you** enabled to arm built-in autoplay, or choose **Apply Now** after solving.
+4. To use another replay bot, export the macro, import it there and play it back.
 
 # Report Bugs
 

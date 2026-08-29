@@ -1,3 +1,11 @@
+# beta 246
+
+- Replaced rolling random candidate search with an incremental, state-deduplicated beam search.
+- Added persistent alternate branches, adaptive horizons and compact simulation checkpoints.
+- Added geometry-guided Wave corridor planning while retaining one-frame spam choices.
+- Hardened endpoint inference, teleport validation and progress/checkpoint accounting against bogus X jumps.
+- Added detailed solver/recovery diagnostics and reduced hot-loop allocation and state copying.
+
 # beta 24
 
 - Red Orb & Red Pad
@@ -58,4 +66,4 @@
 # beta 1-16
 - Initial Release
 - geode index does not allow for link transfers without updating the entire mod (and therefore pushing a new update to everyone)
-- this is not a new version. it is the same version. the geode index people do not like flexibility (?) 
+- this is not a new version. it is the same version. the geode index people do not like flexibility (?)
