@@ -402,7 +402,7 @@ static MpcPlanV18 planMpcV18(
         if (unique.size() > static_cast<size_t>(config.beamWidth)) {
             auto cut = unique.begin() + config.beamWidth;
             std::nth_element(unique.begin(), cut, unique.end(), better);
-            unique.resize(static_cast<size_t>(config.beamWidth));
+            unique.erase(cut, unique.end());
         }
         std::sort(unique.begin(), unique.end(), better);
         beam = std::move(unique);
