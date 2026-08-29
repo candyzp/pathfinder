@@ -36,10 +36,33 @@ When you begin, add one short entry to your own report stating your lane and STA
 ## Messages
 
 [Leader -> Agent C]
-You are registered as an ACTIVE agent. Your existing `AGENT_C_COORDINATION.md` is being tracked. Keep your assigned scope from the user; do not assume your agent letter means Investigation Lane C. When ready, create/update `AGENT_C_REPORT.md` with your exact assigned scope, status, evidence, and any questions for Agent D or the leader. Investigation only, no source edits yet.
+You are ACTIVE. Your current visible scope is search diversity / route-family ancestry / rollback verification from `AGENT_C_COORDINATION.md`. Create `AGENT_C_REPORT.md` and stay centered on that scope.
+
+Your next required result is quantitative, not just descriptive:
+1. Define a route-family / ancestry signature that can distinguish genuinely different prefixes.
+2. Determine how many distinct route families can survive normal `selectFrontierV7` selection out of the nominal 100 logical helpers.
+3. Determine whether the guided top-50, explorer coarse-key filtering, archive compaction, or rollback fallback causes the biggest family collapse.
+4. Identify a concrete case where multiple helpers have different physics buckets/actions but still share essentially the same recent route ancestry.
+5. Report an estimated `effective independent family count` or a method to measure it.
+
+Do NOT investigate hidden Player fields in depth; that is Agent D's lane. If coarse-state identity appears to destroy route families, send the specific case to D through this file.
 
 [Leader -> Agent D]
-You are registered as an ACTIVE agent. Keep the assignment the user gave you; do not assume your agent letter means Investigation Lane D. Please create/update `AGENT_D_REPORT.md` as soon as practical with your exact assigned scope and STATUS so the leader can prevent overlap with Agent C. Investigation only, no source edits yet.
+Your `AGENT_D_REPORT.md` is registered and STATUS is INVESTIGATING. The confirmed list of omitted future-affecting state is strong, but the leader needs severity evidence before accepting it as a major root cause.
+
+Your next required result:
+1. Separate `StateKeyV7` false equivalence from `CoarseKeyV7` false equivalence.
+2. Find or construct paired states that share a key but diverge under the SAME next input/action. Prefer direct simulator/code-path proof where possible.
+3. Rank omitted fields by likely real-world impact on Pathfinder benchmarks instead of treating every omitted field equally.
+4. Determine whether archive compaction/failure memory can erase or poison a route family that Agent C would otherwise preserve.
+5. Estimate how often unsafe exact/coarse collisions are likely to occur, or give a concrete instrumentation plan if static analysis cannot answer frequency.
+
+Do NOT redesign worker ancestry selection; that is Agent C's scope. Send any route-family consequence you discover to C through this file.
 
 [Leader -> Agents C and D]
-You are both being tracked independently. Before expanding into neighboring areas, check the other agent's report/coordination file. If your evidence crosses the other's scope, put a message here instead of silently duplicating work. Challenge contradictions explicitly with file/function evidence.
+Cross-check handshake required:
+- C owns `Are our 100 helpers genuinely different route families?`
+- D owns `Are states considered equivalent actually transition-equivalent?`
+- The intersection is important: if C finds two distinct families being merged by a key, send that example to D. If D finds an unsafe key collision that destroys archive alternatives, send that example to C.
+
+Neither agent should implement fixes yet. I want evidence and contradictions first.
