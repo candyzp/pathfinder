@@ -50,7 +50,7 @@ char const* precisionNameV8(int level) {
     return "broad";
 }
 
-std::string compactTextV8(std::string value, size_t maxLength = 58) {
+std::string compactTextV8(std::string value, size_t maxLength = 62) {
     for (char& c : value) {
         if (c == '\n' || c == '\r' || c == '\t')
             c = ' ';
@@ -101,13 +101,11 @@ public:
                 return;
             dashboard->setID("solver-dashboard-v8");
             dashboard->setAnchorPoint({0.5f, 0.5f});
-            dashboard->setScale(0.31f);
+            dashboard->setScale(0.285f);
             dashboard->setPosition(original->getPosition() + ccp(0.f, -2.f));
             parent->addChild(dashboard, original->getZOrder() + 1);
         }
 
-        // Keep the stock label as a lifecycle signal. PathfinderNode hides it
-        // when the run ends, so the richer dashboard disappears automatically.
         dashboard->setVisible(original->isVisible());
         if (!original->isVisible())
             return;
@@ -117,26 +115,32 @@ public:
         int alive = std::max(0, t.producedCount);
         int rejected = std::max(0, t.duplicateCount + t.deadCount);
         double displayProgress = t.progress >= 100.0 ? 99.99 : t.progress;
-        float displayX = std::max(t.currentX, t.furthestX);
+        float speculativeLead = std::max(0.f, t.furthestX - t.checkpointX);
         int horizonMs = static_cast<int>(std::lround(
             static_cast<double>(std::max(0, t.horizonFrames)) * 1000.0 / 240.0
         ));
-        std::string focus = t.stallRescue
-            ? fmt::format("X {:.0f} / {} repeated deaths", t.focusX, t.deathClusterCount)
-            : "none";
+        std::string deadEnd = t.progressLocked
+            ? fmt::format(
+                "X {:.0f} | rollback {} | depth {} | SAFE LOCKED",
+                t.focusX,
+                t.rollbackDistance,
+                t.deadEndLevel
+            )
+            : "none | safe progress unlocked";
         std::string behavior = compactTextV8(
             !t.decision.empty() ? t.decision : t.recoveryReason
         );
         std::string why = compactTextV8(t.recoveryReason);
 
         auto text = fmt::format(
-            "PATHFINDER BRAIN v8\n"
+            "PATHFINDER BRAIN v9\n"
             "DOING  {}\n"
             "WHY    {}\n"
-            "BEST   {:.2f}% | {} | X {:.0f} | clearance {:.1f}\n"
+            "SAFE   {:.2f}% | {} | X {:.0f} | clearance {:.1f}\n"
+            "SEEN   X {:.0f} | speculative lead +{:.0f}\n"
             "POP    {} states: {} guided + {} explore | frontier {}\n"
             "SEARCH {} | horizon {}f / {}ms | archive {}\n"
-            "FOCUS  {}\n"
+            "DEADEND {}\n"
             "RESULT {} alive -> {} unique | {} rejected | {} dead\n"
             "STALL  {} layers | recoveries {} | {} real threads\n"
             "SPEED  {:.0f} trials/s | {} total trials",
@@ -144,8 +148,10 @@ public:
             why,
             displayProgress,
             vehicleNameV8(t.vehicleType),
-            displayX,
+            t.checkpointX,
             t.bestClearance,
+            t.furthestX,
+            speculativeLead,
             t.workerCount,
             t.guidedCount,
             t.explorerCount,
@@ -154,7 +160,7 @@ public:
             t.horizonFrames,
             horizonMs,
             t.archiveCount,
-            focus,
+            deadEnd,
             alive,
             t.uniqueCount,
             rejected,
