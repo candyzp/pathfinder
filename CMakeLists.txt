@@ -10,6 +10,7 @@ add_library(${PROJECT_NAME} SHARED
     src/main.cpp
     src/creator.cpp
     src/pathfinder.cpp
+    src/flappy.cpp
     src/checker.cpp
     src/debug.cpp
     # Add any extra C++ source files here
