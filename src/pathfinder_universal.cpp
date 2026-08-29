@@ -205,8 +205,6 @@ static bool advanceNodeV18(
     }
 
     node.sim.runFrame(node.sim.press1, node.sim.press2, 1.f / 240.f);
-    ++node.sim.latestState().frame;
-    --node.sim.latestState().frame;
 
     auto const& p1 = node.sim.latestState();
     bool dead = p1.dead || outOfBoundsV18(p1, node.sim.highestY);
