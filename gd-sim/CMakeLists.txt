@@ -8,7 +8,10 @@ file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS src/*.cpp src/**/*.cpp)
 add_library(gd-sim STATIC ${SOURCES})
 
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
-target_compile_options(gd-sim PRIVATE $<$<CONFIG:Debug>:-g> -O3 -fno-math-errno -fno-trapping-math -fomit-frame-pointer $<$<CONFIG:Release>:-fno-rtti -fvisibility=hidden>)
+# Pathfinder's cooperative orb targeting uses dynamic_cast against simulator objects.
+# Keep RTTI enabled in Release so the static gd-sim library emits the Object/Orb
+# typeinfo required by iOS and other release linkers.
+target_compile_options(gd-sim PRIVATE $<$<CONFIG:Debug>:-g> -O3 -fno-math-errno -fno-trapping-math -fomit-frame-pointer $<$<CONFIG:Release>:-fvisibility=hidden>)
 
 
 target_include_directories(gd-sim PUBLIC include)
