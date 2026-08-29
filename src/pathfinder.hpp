@@ -6,6 +6,12 @@
 #include <string>
 #include <vector>
 
+// Windows headers still expose the legacy `near` macro. It collides with local
+// identifiers in the solver and causes Clang/MSVC parsing errors on Windows.
+#ifdef near
+#undef near
+#endif
+
 struct PathfinderInput {
     uint32_t frame = 0;
     bool player2 = false;
