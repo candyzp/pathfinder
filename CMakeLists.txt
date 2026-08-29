@@ -18,12 +18,13 @@ add_library(${PROJECT_NAME} SHARED
     # Add any extra C++ source files here
 )
 
-# V17 universal frame-exact MPC. Cube, Ship, Ball, UFO, Wave, Robot, Spider,
-# Swing, and dual mode all use the same state-space/receding-horizon controller.
-# Every 240-TPS decision tick branches button state, dead futures are removed,
-# near-identical physics states merge, and only a tiny safe prefix is committed.
-# The Show-Hitbox-style real GD geometry scanner remains available as a second
-# edge sensor. Old helper/team and V15/V16 controllers are outside the build.
+# V18 universal incremental frame-exact MPC. Cube, Ship, Ball, UFO, Wave,
+# Robot, Spider, Swing, and dual mode all use one receding-horizon controller.
+# Surviving beam states advance one new 240-TPS frame at a time instead of
+# replaying every candidate from the horizon root. Near-identical physics states
+# merge immediately and only a short safe prefix is committed before replanning.
+# The Show-Hitbox-style real GD geometry scanner remains a second edge sensor.
+# Old helper/team and V15/V16 controllers are outside the active build.
 
 if (NOT DEFINED ENV{GEODE_SDK})
     message(FATAL_ERROR "Please define GEODE_SDK environment variable to point to Geode")
