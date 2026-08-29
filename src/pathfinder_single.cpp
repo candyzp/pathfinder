@@ -1,14 +1,16 @@
-// Single-controller Pathfinder V15 with local failure learning.
+// Single-controller Pathfinder V16 with local failure learning and Wave MPC.
 //
 // There is still exactly one decision-making solver. Parallel threads only
-// evaluate candidates. V15 adds persistent per-region timing memory, dense
-// early dash-release candidates, repeated-death-basin detection, and bounded
-// strategy resets so the solver cannot repeat one losing hold forever.
+// evaluate candidates. V16 keeps V15's persistent timing memory/dash learning,
+// but Wave now uses a frame-exact receding-horizon beam planner. When Pathfinder
+// is launched from a live PlayLayer it can also score every Wave tick against a
+// Show-Hitbox-style snapshot of Geometry Dash's real collision polygons.
 #define pathfind pathfind_plain_base_v15
 #include "pathfinder.cpp"
 #undef pathfind
 
 #include "solver_dashboard.hpp"
+#include "wave_mpc.hpp"
 
 #include <chrono>
 
@@ -201,7 +203,7 @@ void publishV15(
     int epoch,
     LearningMemoryV15 const& memory
 ) {
-    telemetry.mode = "single-learning-v15";
+    telemetry.mode = "single-learning-wave-mpc-v16";
     telemetry.workerCount = 1;
     telemetry.physicalThreadCount = std::max(1, evaluatorThreads);
     telemetry.guidedCount = 0;
@@ -225,6 +227,8 @@ void publishV15(
         telemetry.decision =
             "Learning from repeated deaths: abandoning familiar timing";
         telemetry.stallRescue = true;
+    } else if (telemetry.vehicleType == static_cast<int>(VehicleType::Wave)) {
+        telemetry.decision = "Wave MPC testing HOLD/RELEASE on every 240-TPS tick";
     } else if (telemetry.decision.empty()) {
         telemetry.decision = "Single Pathfinder testing learned timing choices";
     }
@@ -250,7 +254,7 @@ PathfinderResult pathfind(
         std::isfinite(trustedEndX) && trustedEndX > solveStartX + 30.f;
     if (hasTrustedEnd) {
         lvl.length = trustedEndX;
-        lvl.lengthSource = "trusted-gd-v15";
+        lvl.lengthSource = "trusted-gd-v16";
     }
 
     std::random_device rd;
@@ -366,7 +370,7 @@ PathfinderResult pathfind(
         return true;
     };
 
-    emitTelemetry(0, "learning search started");
+    emitTelemetry(0, "V16 search started: learned timings + frame-exact Wave MPC");
 
     while (!reachedGoal(lvl) && !stop.load()) {
         try {
@@ -409,6 +413,143 @@ PathfinderResult pathfind(
                 recoveryCount + stagnantRounds / 3 + memory.sameBasinRounds / 2
             );
             hardestSearchLevel = std::max(hardestSearchLevel, searchLevel);
+
+            // V16 Wave path: do not use the old rhythm/random flight guesses.
+            // At every 240-TPS tick, branch HOLD and RELEASE, reject collisions,
+            // merge near-identical states, keep the safest beam, commit 8 ticks,
+            // then solve again from the new exact state.
+            if (mode == VehicleType::Wave && !dual) {
+                debugVehicleType = static_cast<int>(mode);
+                debugSearchLevel = searchLevel;
+                debugClearance = 0.f;
+                emitTelemetry(
+                    0,
+                    hasTrustedEnd
+                        ? "Wave MPC scanning every tick; real GD hitbox map enabled when available"
+                        : "Wave MPC scanning every tick with gd-sim geometry"
+                );
+
+                auto wavePlan = planWaveMpcV16(
+                    lvl,
+                    searchLevel,
+                    hasTrustedEnd,
+                    stop
+                );
+                totalTrials += wavePlan.trials;
+                debugHorizon = wavePlan.lookaheadFrames;
+                debugCandidateCount = wavePlan.beamWidth * 2;
+                debugWorkers = wavePlan.evaluatorThreads;
+                debugClearance = wavePlan.minClearance;
+                if (wavePlan.deathX > 0.f)
+                    lastDeathX = wavePlan.deathX;
+
+                emitTelemetry(
+                    wavePlan.found ? 1 : 2,
+                    wavePlan.usedRealGeometry
+                        ? "Wave MPC result uses Show-Hitbox-style real GD collision edges"
+                        : "Wave MPC result uses frame-exact gd-sim collision checks"
+                );
+
+                if (stop.load())
+                    break;
+
+                if (!wavePlan.found) {
+                    ++memory.sameBasinRounds;
+                    recoverFromBest(
+                        std::min(3600, 480 + recoveryCount * 260)
+                    );
+                    emitTelemetry(
+                        2,
+                        "Wave MPC exhausted its surviving beam; backing up before retry"
+                    );
+
+                    if (memory.sameBasinRounds >= 4) {
+                        if (!resetStrategyEpoch()) {
+                            emitTelemetry(
+                                2,
+                                "Wave wall survived all strategy epochs; returning best route"
+                            );
+                            break;
+                        }
+                    }
+                    continue;
+                }
+
+                int applyUntil = frame + wavePlan.commitFrames;
+                while (
+                    lvl.currentFrame() < applyUntil &&
+                    !lvl.latestState().dead &&
+                    !reachedGoal(lvl)
+                ) {
+                    uint32_t current = static_cast<uint32_t>(lvl.currentFrame());
+                    if (wavePlan.inputs.contains(inputKey(current, false)))
+                        lvl.press1 = !lvl.press1;
+                    lvl.runFrame(lvl.press1, lvl.press2, 1.f / 240.f);
+                }
+
+                if (lvl.latestState().dead) {
+                    lastDeathX = lvl.latestState().pos.x;
+                    ++memory.learnedDeaths;
+                    ++memory.sameBasinRounds;
+                    recoverFromBest(
+                        std::min(3600, 540 + recoveryCount * 260)
+                    );
+                    emitTelemetry(
+                        2,
+                        "Wave MPC prefix died during commit; backing up and widening beam"
+                    );
+                    continue;
+                }
+
+                if (lvl.currentFrame() > trueBestFrame) {
+                    trueBestFrame = lvl.currentFrame();
+                    fail = 0;
+                    numAway = 1000;
+                }
+
+                bool advancedX =
+                    lvl.latestState().pos.x > furthestX + kMeaningfulAdvanceV15;
+
+                if (advancedX || reachedGoal(lvl)) {
+                    furthestX = std::max(furthestX, lvl.latestState().pos.x);
+                    bestPlayable.capture(lvl);
+                    stagnantRounds = 0;
+                    recoveryCount = std::max(0, recoveryCount - 2);
+                    memory.sameBasinRounds = 0;
+                    memory.lastDeathBucket = std::numeric_limits<int>::min();
+                    lastRealAdvanceTrial = totalTrials;
+                    lastRealAdvanceTime = std::chrono::steady_clock::now();
+                    emitTelemetry(
+                        3,
+                        reachedGoal(lvl)
+                            ? "complete"
+                            : "Wave MPC committed 8 verified ticks and replanning"
+                    );
+                } else if (lvl.latestState().direction < 0) {
+                    stagnantRounds = 0;
+                } else {
+                    ++stagnantRounds;
+                }
+
+                if (
+                    stagnantRounds >= 8 &&
+                    bestPlayable.frame() > 2 &&
+                    lvl.latestState().direction >= 0
+                ) {
+                    recoverFromBest(
+                        std::min(
+                            bestPlayable.frame() - 1,
+                            420 * (1 + std::min(recoveryCount, 8))
+                        )
+                    );
+                    stagnantRounds = 0;
+                    emitTelemetry(
+                        2,
+                        "Wave MPC stagnated; backing up without accepting fake progress"
+                    );
+                }
+                continue;
+            }
 
             int horizonFrames = 720 + searchLevel * 80;
             if (flightMode(mode))
@@ -961,9 +1102,11 @@ PathfinderResult pathfind(
         result.complete
     );
 
+    auto geometry = hasTrustedEnd ? getPathfinderRealGeometry() : nullptr;
+
     std::ostringstream diagnostics;
     diagnostics
-        << "solver=single-learning-v15"
+        << "solver=single-learning-wave-mpc-v16"
         << " progress=" << result.progress
         << " frame=" << bestPlayable.frame()
         << " routeX=" << bestPlayable.x()
@@ -983,6 +1126,7 @@ PathfinderResult pathfind(
         << " deadCandidatesRejected=" << deadCandidatesRejected
         << " lastDeathX=" << lastDeathX
         << " bestClearance=" << debugClearance
+        << " realGeometryShapes=" << (geometry ? geometry->shapeCount : 0)
         << " recoveredExceptions=" << recoveredExceptions
         << " moveTriggers=" << lvl.supportedMoveTriggers
         << " unsupportedMoves=" << lvl.unsupportedMoveTriggers
