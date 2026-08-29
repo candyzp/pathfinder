@@ -9,7 +9,7 @@ project(pathfinder VERSION 1.0.0)
 add_library(${PROJECT_NAME} SHARED
     src/main.cpp
     src/creator.cpp
-    src/pathfinder_state_v12.cpp
+    src/pathfinder_state_v13.cpp
     src/solver_dashboard.cpp
     src/flappy.cpp
     src/checker.cpp
@@ -17,12 +17,13 @@ add_library(${PROJECT_NAME} SHARED
     # Add any extra C++ source files here
 )
 
-# V12 uses 100 logical helpers as ten trainer teams of ten. Each team rallies
-# around its own learned route, follows new verified progress together, and only
-# that team rewinds deeper when repeated deaths prove its current route is bad.
+# V13 keeps 100 logical helpers as ten trainer teams of ten, but recovery only
+# deepens when it finds a physically earlier anchor. Forward recovery progress
+# is preserved, SAFE is frozen rather than replaced by rollback, and Stop keeps
+# the best living partial route found so far.
 set_source_files_properties(
     src/main.cpp
-    PROPERTIES COMPILE_DEFINITIONS "pathfind=pathfind_v12"
+    PROPERTIES COMPILE_DEFINITIONS "pathfind=pathfind_v13"
 )
 
 if (NOT DEFINED ENV{GEODE_SDK})
