@@ -37,6 +37,18 @@ char const* vehicleNameV8(int type) {
     }
 }
 
+char const* precisionNameV8(int level) {
+    if (level >= 4)
+        return "surgical / 1-frame";
+    if (level == 3)
+        return "fine";
+    if (level == 2)
+        return "tight";
+    if (level == 1)
+        return "refined";
+    return "broad";
+}
+
 std::string compactTextV8(std::string value, size_t maxLength = 58) {
     for (char& c : value) {
         if (c == '\n' || c == '\r' || c == '\t')
@@ -103,8 +115,13 @@ public:
         auto const& t = state.telemetry;
         int alive = std::max(0, t.producedCount);
         int rejected = std::max(0, t.duplicateCount + t.deadCount);
+        double displayProgress = t.progress >= 100.0 ? 99.99 : t.progress;
+        float displayX = std::max(t.currentX, t.furthestX);
+        int horizonMs = static_cast<int>(std::lround(
+            static_cast<double>(std::max(0, t.horizonFrames)) * 1000.0 / 240.0
+        ));
         std::string focus = t.stallRescue
-            ? fmt::format("X {:.0f} ({} repeats)", t.focusX, t.deathClusterCount)
+            ? fmt::format("X {:.0f} / {} repeated deaths", t.focusX, t.deathClusterCount)
             : "none";
         std::string behavior = compactTextV8(
             !t.decision.empty() ? t.decision : t.recoveryReason
@@ -115,24 +132,26 @@ public:
             "PATHFINDER BRAIN v8\n"
             "DOING  {}\n"
             "WHY    {}\n"
-            "BEST   {:.2f}% | {} | X {:.0f} | clear {:.1f}\n"
+            "BEST   {:.2f}% | {} | X {:.0f} | clearance {:.1f}\n"
             "POP    {} states: {} guided + {} explore | frontier {}\n"
-            "SEARCH P{} | horizon {}f | archive {} | focus {}\n"
+            "SEARCH {} | horizon {}f / {}ms | archive {}\n"
+            "FOCUS  {}\n"
             "RESULT {} alive -> {} unique | {} rejected | {} dead\n"
-            "STALL  {} layers | recoveries {} | {} physical threads\n"
-            "SPEED  {:.0f} trials/s | {:L} total trials",
+            "STALL  {} layers | recoveries {} | {} real threads\n"
+            "SPEED  {:.0f} trials/s | {} total trials",
             behavior,
             why,
-            t.progress,
+            displayProgress,
             vehicleNameV8(t.vehicleType),
-            t.currentX,
+            displayX,
             t.bestClearance,
             t.workerCount,
             t.guidedCount,
             t.explorerCount,
             t.frontierCount,
-            t.searchLevel,
+            precisionNameV8(t.searchLevel),
             t.horizonFrames,
+            horizonMs,
             t.archiveCount,
             focus,
             alive,
