@@ -11,6 +11,7 @@
 #include "pathfinder.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <future>
 
@@ -31,6 +32,7 @@ struct PlaybackRuntime {
     PlayLayer* layer = nullptr;
     std::vector<PathfinderInput> inputs;
     size_t cursor = 0;
+    std::array<std::array<bool, 4>, 2> held {};
     bool active = false;
 };
 
@@ -54,24 +56,57 @@ std::string decompressedLevelString(GJGameLevel* level) {
     return encoded;
 }
 
-void seekPlayback(double seconds) {
+void releasePlaybackButtons(PlayLayer* play) {
+    if (!play)
+        return;
+
+    for (size_t player = 0; player < g_playback.held.size(); ++player) {
+        for (int button = 1; button <= 3; ++button) {
+            if (!g_playback.held[player][button])
+                continue;
+
+            play->GJBaseGameLayer::handleButton(false, button, player == 1);
+            g_playback.held[player][button] = false;
+        }
+    }
+}
+
+void seekPlayback(PlayLayer* play, double seconds, bool syncButtons = true) {
     if (!g_playback.active)
         return;
 
     uint32_t frame = static_cast<uint32_t>(std::llround(
         std::max(0.0, seconds) * kPathfinderTPS
     ));
-    g_playback.cursor = static_cast<size_t>(std::lower_bound(
-        g_playback.inputs.begin(),
-        g_playback.inputs.end(),
-        frame,
-        [](PathfinderInput const& input, uint32_t value) {
-            return input.frame < value;
+
+    std::array<std::array<bool, 4>, 2> desired {};
+    size_t cursor = 0;
+
+    while (cursor < g_playback.inputs.size() && g_playback.inputs[cursor].frame < frame) {
+        auto const& input = g_playback.inputs[cursor++];
+        if (input.button < 1 || input.button > 3)
+            continue;
+        desired[input.player2 ? 1 : 0][input.button] = input.down;
+    }
+
+    if (syncButtons && play) {
+        releasePlaybackButtons(play);
+        for (size_t player = 0; player < desired.size(); ++player) {
+            for (int button = 1; button <= 3; ++button) {
+                if (desired[player][button])
+                    play->GJBaseGameLayer::handleButton(true, button, player == 1);
+            }
         }
-    ) - g_playback.inputs.begin());
+    }
+
+    g_playback.held = desired;
+    g_playback.cursor = cursor;
 }
 
 void preparePlayback(PlayLayer* layer) {
+    if (g_playback.active && g_playback.layer)
+        releasePlaybackButtons(g_playback.layer);
+
     g_playback = {};
     if (!layer || !layer->m_level || !g_solution.armed)
         return;
@@ -81,7 +116,7 @@ void preparePlayback(PlayLayer* layer) {
     g_playback.layer = layer;
     g_playback.inputs = g_solution.inputs;
     g_playback.active = !g_playback.inputs.empty();
-    seekPlayback(layer->m_attemptTime);
+    seekPlayback(layer, layer->m_attemptTime);
 
     // Pathfinder is an autoplay tool. Don't let a generated-input completion
     // masquerade as a legitimate manual completion.
@@ -95,15 +130,28 @@ void armSolution(std::string const& levelName, PathfinderResult const& result) {
     g_solution.armed = !g_solution.inputs.empty();
 
     // If the solver was opened from the pause menu, attach the solution to the
-    // current attempt immediately. Starting/restarting the attempt resets the
-    // cursor to the correct point automatically.
-    if (auto* play = PlayLayer::get(); play && play->m_level && levelNameOf(play->m_level) == levelName)
+    // current level and restart from frame zero. A generated route is authored
+    // from the beginning of the attempt, so jumping into it mid-attempt can
+    // leave held inputs and physics state out of sync.
+    if (auto* play = PlayLayer::get(); play && play->m_level && levelNameOf(play->m_level) == levelName) {
         preparePlayback(play);
+        if (g_playback.active) {
+            queueInMainThread([play] {
+                if (PlayLayer::get() == play)
+                    play->resetLevelFromStart();
+            });
+        }
+    }
 }
 
 void feedPlayback(PlayLayer* play) {
     if (!g_playback.active || g_playback.layer != play)
         return;
+
+    if (play->m_player1 && play->m_player1->m_isDead) {
+        releasePlaybackButtons(play);
+        return;
+    }
 
     // Use Geometry Dash's own attempt clock instead of maintaining a second
     // timer. This keeps playback tied to the actual gameplay timeline and makes
@@ -115,7 +163,19 @@ void feedPlayback(PlayLayer* play) {
     while (g_playback.cursor < g_playback.inputs.size() &&
            g_playback.inputs[g_playback.cursor].frame <= frame) {
         auto const input = g_playback.inputs[g_playback.cursor++];
-        play->GJBaseGameLayer::handleButton(input.down, 1, !input.player2);
+        if (input.button < 1 || input.button > 3)
+            continue;
+
+        // Match xdBot/GDR semantics directly: false = player 1, true = player 2.
+        // Routing through GD's own handleButton keeps the same primary control
+        // working across Cube, Ship, Ball, UFO, Wave, Robot, Spider and Swing,
+        // including dual sections.
+        play->GJBaseGameLayer::handleButton(
+            input.down,
+            static_cast<int>(input.button),
+            input.player2
+        );
+        g_playback.held[input.player2 ? 1 : 0][input.button] = input.down;
     }
 }
 
@@ -192,7 +252,7 @@ public:
                 .intoMenuItem([this, result](CCMenuItemSpriteExtra*) {
                     armSolution(m_levelName, result);
                     if (auto* label = typeinfo_cast<CCLabelBMFont*>(getChildByIDRecursive("status")))
-                        label->setString("Inputs applied to Pathfinder");
+                        label->setString("Autoplay armed");
                 })
                 .scale(0.65f)
                 .move(-55, -42)
@@ -234,7 +294,7 @@ public:
         char const* statusText = !hasInputs
             ? "No usable input path was found"
             : autoApply
-                ? "Inputs applied automatically"
+                ? "Autoplay armed automatically"
                 : "Choose how to use this path";
 
         Build<CCLabelBMFont>::create(statusText, "chatFont.fnt")
@@ -356,14 +416,20 @@ struct PathfinderPlayLayer : geode::Modify<PathfinderPlayLayer, PlayLayer> {
     }
 
     void resetLevel() {
-        PlayLayer::resetLevel();
         if (g_playback.layer == this && g_playback.active)
-            seekPlayback(m_attemptTime);
+            releasePlaybackButtons(this);
+
+        PlayLayer::resetLevel();
+
+        if (g_playback.layer == this && g_playback.active)
+            seekPlayback(this, m_attemptTime);
     }
 
     void onQuit() {
-        if (g_playback.layer == this)
+        if (g_playback.layer == this) {
+            releasePlaybackButtons(this);
             g_playback = {};
+        }
         PlayLayer::onQuit();
     }
 };
