@@ -9,7 +9,7 @@ project(pathfinder VERSION 1.0.0)
 add_library(${PROJECT_NAME} SHARED
     src/main.cpp
     src/creator.cpp
-    src/pathfinder_state_v10.cpp
+    src/pathfinder_state_v12.cpp
     src/solver_dashboard.cpp
     src/flappy.cpp
     src/checker.cpp
@@ -17,12 +17,12 @@ add_library(${PROJECT_NAME} SHARED
     # Add any extra C++ source files here
 )
 
-# V10 gives all 100 logical helpers one owned job per generation (10 squads of
-# 10) and keeps rollback anchors separate from earned forward progress. A
-# repeated death wall can only deepen recovery until a living route escapes it.
+# V12 uses 100 logical helpers as ten trainer teams of ten. Each team rallies
+# around its own learned route, follows new verified progress together, and only
+# that team rewinds deeper when repeated deaths prove its current route is bad.
 set_source_files_properties(
     src/main.cpp
-    PROPERTIES COMPILE_DEFINITIONS "pathfind=pathfind_v10"
+    PROPERTIES COMPILE_DEFINITIONS "pathfind=pathfind_v12"
 )
 
 if (NOT DEFINED ENV{GEODE_SDK})
