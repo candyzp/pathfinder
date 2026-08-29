@@ -9,7 +9,7 @@ project(pathfinder VERSION 1.0.0)
 add_library(${PROJECT_NAME} SHARED
     src/main.cpp
     src/creator.cpp
-    src/pathfinder_team_v2.cpp
+    src/pathfinder_team_v3.cpp
     src/flappy.cpp
     src/checker.cpp
     src/debug.cpp
@@ -17,7 +17,7 @@ add_library(${PROJECT_NAME} SHARED
 )
 
 if (NOT DEFINED ENV{GEODE_SDK})
-    message(FATAL_ERROR "Unable to find Geode SDK! Please define GEODE_SDK environment variable to point to Geode")
+    message(FATAL_ERROR "Please define GEODE_SDK environment variable to point to Geode")
 else()
     message(STATUS "Found Geode: $ENV{GEODE_SDK}")
 endif()
