@@ -60,7 +60,10 @@ struct PathfinderTelemetry {
     int stallLayers = 0;
     int recoveryCount = 0;
     int deathClusterCount = 0;
+    int rollbackDistance = 0;
+    int deadEndLevel = 0;
     bool stallRescue = false;
+    bool progressLocked = false;
     uint64_t totalTrials = 0;
     std::string mode;
     std::string decision;
