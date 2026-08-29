@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <mutex>
 #include <string>
 
@@ -21,7 +22,7 @@ struct DashboardStateV8 {
 
 std::mutex s_dashboardMutex;
 DashboardStateV8 s_dashboard;
-std::atomic_bool s_tickerQueued = false;
+std::atomic_bool s_tickerStarted = false;
 
 char const* vehicleNameV8(int type) {
     switch (type) {
@@ -171,16 +172,15 @@ public:
 PathfinderDashboardTickerV8* s_ticker = nullptr;
 
 void ensureTickerV8() {
-    if (s_ticker || s_tickerQueued.exchange(true))
+    if (s_tickerStarted.exchange(true))
         return;
 
     Loader::get()->queueInMainThread([] {
-        s_tickerQueued = false;
-        if (s_ticker)
-            return;
         auto* director = CCDirector::sharedDirector();
-        if (!director || !director->getScheduler())
+        if (!director || !director->getScheduler()) {
+            s_tickerStarted = false;
             return;
+        }
 
         s_ticker = new PathfinderDashboardTickerV8();
         s_ticker->retain();
