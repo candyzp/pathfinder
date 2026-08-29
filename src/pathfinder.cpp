@@ -613,7 +613,7 @@ static bool betterTrial(
     float progressBand = flightMode(mode)
         ? 42.f
         : mode == VehicleType::Robot ? 28.f
-        : mode == VehicleType::Spider ? 20.f
+        : mode == VehicleType::Spider ? 36.f
         : 16.f;
     float xDelta = trial.x - best.x;
     if (std::abs(xDelta) > progressBand)
@@ -623,6 +623,7 @@ static bool betterTrial(
     float clearanceBand = flightMode(mode)
         ? 1.5f
         : mode == VehicleType::Robot ? 1.0f
+        : mode == VehicleType::Spider ? 1.5f
         : 0.75f;
     if (std::abs(clearanceDelta) > clearanceBand)
         return clearanceDelta > 0.f;
@@ -651,10 +652,11 @@ static std::vector<std::set<SearchInput>> structuredCandidates(
     int horizonFrames,
     VehicleType mode,
     bool dual,
-    bool heldP1
+    bool heldP1,
+    bool dashingP1
 ) {
     std::vector<std::set<SearchInput>> candidates;
-    candidates.reserve(340);
+    candidates.reserve(760);
     candidates.emplace_back();
 
     static constexpr int offsets[] = {
@@ -723,39 +725,99 @@ static std::vector<std::set<SearchInput>> structuredCandidates(
             }
         }
     } else if (mode == VehicleType::Spider) {
-        // Spider only teleports on fresh press edges. Generate explicit click chains
-        // with a release after every press, and normalize a held button first so a
-        // portal entered while holding cannot poison the whole search window.
+        // A Spider needs fresh press edges for teleports, while a dash orb needs
+        // that fresh press to remain held after activation. Cover both mechanics
+        // explicitly instead of using the same short click train for everything.
         static constexpr int periods[] = {12, 18, 24, 30, 36, 48, 60, 72, 96, 120};
         static constexpr int pulseWidths[] = {1, 2, 3, 4, 6};
         int patternWindow = std::min(horizonFrames, 720);
 
-        for (int period : periods) {
-            for (int pulse : pulseWidths) {
-                for (int phase : {0, period / 3}) {
-                    std::set<SearchInput> clicks;
-                    if (heldP1)
-                        addToggle(clicks, frame, horizonFrames, 0, false);
+        if (dashingP1) {
+            // We are already inside a dash. Do not normalize the held button at
+            // frame zero. Search deliberate release points, then fresh Spider taps.
+            for (int releaseAt : {24, 36, 48, 60, 72, 96, 120, 144, 192, 240, 360, 480, 600}) {
+                if (releaseAt >= horizonFrames)
+                    continue;
 
-                    int start = phase + (heldP1 ? 2 : 0);
-                    for (int t = start; t + pulse < patternWindow; t += period) {
-                        addToggle(clicks, frame, horizonFrames, t, false);
-                        addToggle(clicks, frame, horizonFrames, t + pulse, false);
-                    }
-                    candidates.push_back(std::move(clicks));
+                std::set<SearchInput> releaseOnly;
+                addToggle(releaseOnly, frame, horizonFrames, releaseAt, false);
+                candidates.push_back(releaseOnly);
+
+                for (int gap : {2, 4, 8, 12, 16, 24, 36, 48}) {
+                    if (releaseAt + gap + 1 >= horizonFrames)
+                        continue;
+                    auto resume = releaseOnly;
+                    addToggle(resume, frame, horizonFrames, releaseAt + gap, false);
+                    addToggle(resume, frame, horizonFrames, releaseAt + gap + 1, false);
+                    candidates.push_back(std::move(resume));
                 }
             }
-        }
+        } else {
+            // Dense dash-orb commitment patterns. The press starts at many nearby
+            // timings so one can land inside the orb's activation window, then stays
+            // held long enough to clear dash tunnels before releasing.
+            static constexpr int dashStarts[] = {
+                0, 4, 8, 12, 16, 24, 32, 40, 48, 60, 72, 84,
+                96, 108, 120, 132, 144, 156, 168, 180, 192
+            };
+            static constexpr int dashHolds[] = {
+                48, 72, 96, 120, 144, 192, 240, 360, 480, 600
+            };
 
-        for (int start : {0, 1, 2, 4, 6, 8, 12, 16, 24, 36, 48, 72, 96}) {
-            std::set<SearchInput> click;
-            if (heldP1) {
-                addToggle(click, frame, horizonFrames, 0, false);
-                start = std::max(start, 2);
+            for (int authoredStart : dashStarts) {
+                for (int hold : dashHolds) {
+                    std::set<SearchInput> dash;
+                    int pressStart = authoredStart;
+                    if (heldP1) {
+                        addToggle(dash, frame, horizonFrames, 0, false);
+                        pressStart = std::max(pressStart, 2);
+                    }
+
+                    int releaseAt = pressStart + hold;
+                    if (releaseAt >= horizonFrames)
+                        continue;
+
+                    addToggle(dash, frame, horizonFrames, pressStart, false);
+                    addToggle(dash, frame, horizonFrames, releaseAt, false);
+                    candidates.push_back(dash);
+
+                    if (releaseAt + 5 < horizonFrames) {
+                        auto dashThenClick = dash;
+                        addToggle(dashThenClick, frame, horizonFrames, releaseAt + 4, false);
+                        addToggle(dashThenClick, frame, horizonFrames, releaseAt + 5, false);
+                        candidates.push_back(std::move(dashThenClick));
+                    }
+                }
             }
-            addToggle(click, frame, horizonFrames, start, false);
-            addToggle(click, frame, horizonFrames, start + 1, false);
-            candidates.push_back(std::move(click));
+
+            for (int period : periods) {
+                for (int pulse : pulseWidths) {
+                    for (int phase : {0, period / 3}) {
+                        std::set<SearchInput> clicks;
+                        if (heldP1)
+                            addToggle(clicks, frame, horizonFrames, 0, false);
+
+                        int start = phase + (heldP1 ? 2 : 0);
+                        for (int t = start; t + pulse < patternWindow; t += period) {
+                            addToggle(clicks, frame, horizonFrames, t, false);
+                            addToggle(clicks, frame, horizonFrames, t + pulse, false);
+                        }
+                        candidates.push_back(std::move(clicks));
+                    }
+                }
+            }
+
+            for (int authoredStart : {0, 1, 2, 4, 6, 8, 12, 16, 24, 36, 48, 72, 96}) {
+                std::set<SearchInput> click;
+                int start = authoredStart;
+                if (heldP1) {
+                    addToggle(click, frame, horizonFrames, 0, false);
+                    start = std::max(start, 2);
+                }
+                addToggle(click, frame, horizonFrames, start, false);
+                addToggle(click, frame, horizonFrames, start + 1, false);
+                candidates.push_back(std::move(click));
+            }
         }
     }
 
@@ -777,13 +839,12 @@ static std::vector<std::set<SearchInput>> structuredCandidates(
 static int workerCountFor(size_t candidateCount) {
     if (candidateCount <= 1)
         return 1;
-    unsigned int reported = std::thread::hardware_concurrency();
-    if (reported == 0)
-        reported = 4;
-    return static_cast<int>(std::min<size_t>(
-        candidateCount,
-        std::clamp<unsigned int>(reported, 2, 6)
-    ));
+
+    // Aggressive mode by design: oversubscribe the physical cores so Pathfinder
+    // can keep the CPU saturated while the user waits. This intentionally favors
+    // wall-clock solve time over keeping Geometry Dash smooth during a solve.
+    constexpr size_t kAggressiveWorkers = 20;
+    return static_cast<int>(std::min(candidateCount, kAggressiveWorkers));
 }
 
 static std::vector<TrialResult> evaluateCandidatesParallel(
@@ -945,7 +1006,8 @@ PathfinderResult pathfind(
                 horizonFrames,
                 mode,
                 dual,
-                lvl.press1
+                lvl.press1,
+                lvl.latestState().dashing
             );
 
             debugVehicleType = static_cast<int>(mode);
@@ -953,7 +1015,7 @@ PathfinderResult pathfind(
             debugHorizon = horizonFrames;
             debugCandidateCount = static_cast<int>(candidates.size());
             debugClearance = 0.f;
-            emitTelemetry(0, "structured-search");
+            emitTelemetry(0, lvl.latestState().dashing ? "dash-commit-search" : "structured-search");
 
             int workersUsed = 1;
             auto results = evaluateCandidatesParallel(lvl, candidates, horizonFrames, stop, workersUsed);
@@ -996,7 +1058,7 @@ PathfinderResult pathfind(
 
             float strongClearance = flightMode(mode)
                 ? 5.5f
-                : mode == VehicleType::Spider ? 1.5f
+                : mode == VehicleType::Spider ? 3.0f
                 : 2.5f;
             bool structuredStrong =
                 haveBest &&
