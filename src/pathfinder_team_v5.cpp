@@ -120,24 +120,23 @@ PathfinderResult pathfind_v5(
 ) {
     // Do not expose an unvalidated 100% to the UI. v4 can believe a worker reached
     // completion before we know that the final exported replay reproduces it.
-    auto guardedCallback = [&](PathfinderTelemetry const& incoming) {
-        if (!callback)
-            return;
-
-        PathfinderTelemetry telemetry = incoming;
-        if (telemetry.progress >= 100.0) {
-            telemetry.progress = 99.99;
-            telemetry.phase = 1;
-            telemetry.recoveryReason = "awaiting-replay-validation";
-        }
-        callback(telemetry);
-    };
+    std::function<void(PathfinderTelemetry const&)> guardedCallback;
+    if (callback) {
+        guardedCallback = [callback](PathfinderTelemetry const& incoming) {
+            PathfinderTelemetry telemetry = incoming;
+            if (telemetry.progress >= 100.0) {
+                telemetry.progress = 99.99;
+                telemetry.phase = 1;
+                telemetry.recoveryReason = "awaiting-replay-validation";
+            }
+            callback(telemetry);
+        };
+    }
 
     PathfinderResult result = pathfind_v4(
         lvlString,
         stop,
-        callback ? guardedCallback
-                 : std::function<void(PathfinderTelemetry const&)>{},
+        guardedCallback,
         trustedEndX
     );
 
