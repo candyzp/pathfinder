@@ -16,13 +16,14 @@ This file is the shared coordination channel for the Pathfinder investigation.
 
 Leader/integrator: ChatGPT coordinator.
 
-### LEADER MODE: COORDINATION ONLY
+### LEADER MODE: ACTIVE COORDINATION ONLY
 
 The leader is NOT investigating Pathfinder source and is NOT implementing fixes while agents are working.
 
 Leader responsibilities right now:
 - watch agent report/coordination files and recent commits
 - maintain lane ownership and prevent duplicate work
+- issue targeted verification orders when reports are too broad or unquantified
 - route questions/challenges between agents through `AGENT_MESSAGES.md`
 - compare findings when reports arrive
 - identify contradictions and request targeted verification
@@ -35,17 +36,33 @@ Do not wait for the leader to perform your lane. Agents should investigate indep
 
 Agent identity letters are NOT automatically the same thing as Investigation Lane letters. Each agent keeps the assignment the user gave it and must state that exact scope in its report.
 
-### Agent C — ACTIVE
-- Existing coordination file: `AGENT_C_COORDINATION.md`
-- Current visible scope from that file: search diversity / route-family ancestry / rollback verification.
+### Agent C — ACTIVE / INVESTIGATING
+- Existing coordination file: `AGENT_C_COORDINATION.md`.
+- Current visible scope: search diversity, route-family ancestry, worker convergence, rollback diversity verification.
 - Formal `AGENT_C_REPORT.md`: not visible yet.
-- Leader action: track findings and prevent overlap with Agent D.
+- Current leader order: quantify route-family ancestry diversity and estimate effective independent family count; identify where normal selection/rollback causes the largest family collapse.
+- Boundary: do not deep-audit hidden Player fields; send key-equivalence examples to Agent D.
 
-### Agent D — ACTIVE
-- User has confirmed Agent D is working.
-- Formal `AGENT_D_REPORT.md`: not visible yet.
-- Exact assigned scope: pending Agent D's acknowledgement/report. Do NOT reassign or guess it.
-- Leader action: track its report as soon as it appears and compare scope against Agent C.
+### Agent D — ACTIVE / INVESTIGATING
+- Formal report: `AGENT_D_REPORT.md` registered in commit `a42de825c187c9e1ea3ca84c85dc500d57c323f0`.
+- Assigned scope: physics-state representation / deduplication.
+- Current agent-reported findings: `StateKeyV7` and especially `CoarseKeyV7` omit multiple future-affecting state dimensions; dual-state identity is incomplete; v9 archive compaction and failure memory may conflate physically different states.
+- Confidence reported by D: HIGH on structural key incompleteness, MEDIUM on whether it materially causes observed complex-level stalls.
+- Current leader order: prove severity with paired same-key states that diverge under identical next actions, separate exact-key versus coarse-key failures, rank omitted fields by real-world importance, and quantify/instrument collision frequency.
+- Boundary: do not redesign worker ancestry selection; send route-family consequences to Agent C.
+
+## Current cross-agent handshake
+
+C and D are intentionally studying two different meanings of "diversity":
+
+- Agent C: Are the nominal helper slots genuinely different route/prefix families?
+- Agent D: Are states treated as equivalent actually transition-equivalent?
+
+Required cross-check:
+- C sends D concrete cases where distinct families are merged by state identity.
+- D sends C concrete cases where key/archive/failure equivalence destroys a potentially useful alternative family.
+
+This intersection is a priority because route-family diversity can be lost either by selection pressure or by unsound state equivalence.
 
 ## Investigation lanes
 
