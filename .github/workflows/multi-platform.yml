@@ -2,9 +2,9 @@ name: Build Geode Mod
 
 on:
   workflow_dispatch:
-  #push:
-  #  branches:
-  #    - "**"
+  push:
+    branches:
+      - "chatgpt-build-v8"
 
 jobs:
   build:
